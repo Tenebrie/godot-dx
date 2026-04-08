@@ -1277,6 +1277,14 @@ Error Object::emit_signalp(const StringName &p_name, const Variant **p_args, int
 			_emitting = true;
 			Variant ret;
 			callable.callp(args, argc, ret, ce);
+
+			// If the callable accepts fewer arguments than the signal provides,
+			// retry with only the number of arguments it expects.
+			if (ce.error == Callable::CallError::CALL_ERROR_TOO_MANY_ARGUMENTS && ce.expected >= 0 && ce.expected < argc) {
+				ce.error = Callable::CallError::CALL_OK;
+				callable.callp(args, ce.expected, ret, ce);
+			}
+
 			_emitting = false;
 
 			if (ce.error != Callable::CallError::CALL_OK) {
