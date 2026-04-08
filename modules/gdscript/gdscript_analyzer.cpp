@@ -2793,7 +2793,6 @@ void GDScriptAnalyzer::update_const_expression_builtin_type(GDScriptParser::Expr
 // This function determines which type is that (if any).
 void GDScriptAnalyzer::update_array_literal_element_type(GDScriptParser::ArrayNode *p_array, const GDScriptParser::DataType &p_element_type) {
 	GDScriptParser::DataType expected_type = p_element_type;
-	expected_type.container_element_types.clear(); // Nested types (like `Array[Array[int]]`) are not currently supported.
 
 	for (int i = 0; i < p_array->elements.size(); i++) {
 		GDScriptParser::ExpressionNode *element_node = p_array->elements[i];
@@ -2825,8 +2824,6 @@ void GDScriptAnalyzer::update_array_literal_element_type(GDScriptParser::ArrayNo
 void GDScriptAnalyzer::update_dictionary_literal_element_type(GDScriptParser::DictionaryNode *p_dictionary, const GDScriptParser::DataType &p_key_element_type, const GDScriptParser::DataType &p_value_element_type) {
 	GDScriptParser::DataType expected_key_type = p_key_element_type;
 	GDScriptParser::DataType expected_value_type = p_value_element_type;
-	expected_key_type.container_element_types.clear(); // Nested types (like `Dictionary[String, Array[int]]`) are not currently supported.
-	expected_value_type.container_element_types.clear();
 
 	for (int i = 0; i < p_dictionary->elements.size(); i++) {
 		GDScriptParser::ExpressionNode *key_element_node = p_dictionary->elements[i].key;
@@ -3693,7 +3690,7 @@ void GDScriptAnalyzer::reduce_call(GDScriptParser::CallNode *p_call, bool p_is_a
 							// Only override if the parameter has no explicit type annotation.
 							if (param->datatype_specifier == nullptr && param->get_datatype().is_variant()) {
 								GDScriptParser::DataType inferred = element_type;
-								inferred.type_source = GDScriptParser::DataType::INFERRED;
+								inferred.type_source = GDScriptParser::DataType::ANNOTATED_INFERRED;
 								inferred.is_constant = false;
 								param->set_datatype(inferred);
 							}
@@ -6033,6 +6030,26 @@ bool GDScriptAnalyzer::get_function_signature(GDScriptParser::Node *p_source, bo
 							p_function == SNAME("min") || p_function == SNAME("max")) {
 						r_return_type = element_type;
 						r_return_type.is_constant = false;
+					}
+
+					// Methods whose first parameter is an element (Variant -> element type).
+					if (p_function == SNAME("append") || p_function == SNAME("push_back") || p_function == SNAME("push_front") ||
+							p_function == SNAME("find") || p_function == SNAME("rfind") || p_function == SNAME("count") ||
+							p_function == SNAME("has") || p_function == SNAME("erase") || p_function == SNAME("fill")) {
+						if (!r_par_types.is_empty()) {
+							*r_par_types.begin() = element_type;
+						}
+					}
+
+					// `insert(position, value)`: second parameter is the element type.
+					if (p_function == SNAME("insert")) {
+						List<GDScriptParser::DataType>::Iterator it = r_par_types.begin();
+						if (it != r_par_types.end()) {
+							++it;
+							if (it != r_par_types.end()) {
+								*it = element_type;
+							}
+						}
 					}
 				}
 
