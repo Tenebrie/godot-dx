@@ -3639,6 +3639,56 @@ void GDScriptAnalyzer::reduce_call(GDScriptParser::CallNode *p_call, bool p_is_a
 				update_dictionary_literal_element_type(E.value, key, value);
 			}
 		}
+
+		// Infer lambda parameter types from typed Array method callbacks.
+		// Lambda bodies are resolved later (pending_body_resolution_lambdas), so updating
+		// parameter types here ensures the body will be analyzed with correct types.
+		if (base_type.kind == GDScriptParser::DataType::BUILTIN && base_type.builtin_type == Variant::ARRAY && base_type.has_container_element_type(0)) {
+			const GDScriptParser::DataType &element_type = base_type.get_container_element_type(0);
+			const StringName &fname = p_call->function_name;
+
+			// Determine which callback parameter indices should receive the element type.
+			// filter(cb), map(cb), any(cb), all(cb): callback arg 0 is element.
+			// reduce(cb, accum): callback arg 1 is element (arg 0 is accumulator).
+			// sort_custom(cb): callback args 0 and 1 are both elements.
+			int callable_arg_index = -1;
+			int element_param_start = -1;
+			int element_param_end = -1;
+
+			if (fname == SNAME("filter") || fname == SNAME("map") || fname == SNAME("any") || fname == SNAME("all")) {
+				callable_arg_index = 0;
+				element_param_start = 0;
+				element_param_end = 0;
+			} else if (fname == SNAME("reduce")) {
+				callable_arg_index = 0;
+				element_param_start = 1;
+				element_param_end = 1;
+			} else if (fname == SNAME("sort_custom")) {
+				callable_arg_index = 0;
+				element_param_start = 0;
+				element_param_end = 1;
+			}
+
+			if (callable_arg_index >= 0 && callable_arg_index < p_call->arguments.size()) {
+				GDScriptParser::ExpressionNode *arg = p_call->arguments[callable_arg_index];
+				if (arg->type == GDScriptParser::Node::LAMBDA) {
+					GDScriptParser::LambdaNode *lambda = static_cast<GDScriptParser::LambdaNode *>(arg);
+					if (lambda->function != nullptr) {
+						for (int i = element_param_start; i <= element_param_end && i < lambda->function->parameters.size(); i++) {
+							GDScriptParser::ParameterNode *param = lambda->function->parameters[i];
+							// Only override if the parameter has no explicit type annotation.
+							if (param->datatype_specifier == nullptr && param->get_datatype().is_variant()) {
+								GDScriptParser::DataType inferred = element_type;
+								inferred.type_source = GDScriptParser::DataType::INFERRED;
+								inferred.is_constant = false;
+								param->set_datatype(inferred);
+							}
+						}
+					}
+				}
+			}
+		}
+
 		validate_call_arg(par_types, default_arg_count, method_flags.has_flag(METHOD_FLAG_VARARG), p_call);
 
 		if (base_type.kind == GDScriptParser::DataType::ENUM && base_type.is_meta_type) {
@@ -5946,6 +5996,25 @@ bool GDScriptAnalyzer::get_function_signature(GDScriptParser::Node *p_source, bo
 				if (!r_method_flags.has_flag(METHOD_FLAG_STATIC) && was_enum && !(E.flags & METHOD_FLAG_CONST)) {
 					push_error(vformat(R"*(Cannot call non-const Dictionary function "%s()" on enum "%s".)*", p_function, p_base_type.enum_type), p_source);
 				}
+
+				// Propagate container element types for Array methods whose return type depends on the element type.
+				if (p_base_type.builtin_type == Variant::ARRAY && p_base_type.has_container_element_type(0)) {
+					const GDScriptParser::DataType &element_type = p_base_type.get_container_element_type(0);
+
+					// Methods that return Array with the same element type.
+					if (p_function == SNAME("filter") || p_function == SNAME("duplicate") || p_function == SNAME("slice")) {
+						r_return_type.set_container_element_type(0, element_type);
+					}
+
+					// Methods that return a single element (Variant -> element type).
+					if (p_function == SNAME("front") || p_function == SNAME("back") || p_function == SNAME("pick_random") ||
+							p_function == SNAME("pop_back") || p_function == SNAME("pop_front") || p_function == SNAME("pop_at") ||
+							p_function == SNAME("min") || p_function == SNAME("max")) {
+						r_return_type = element_type;
+						r_return_type.is_constant = false;
+					}
+				}
+
 				return true;
 			}
 		}
