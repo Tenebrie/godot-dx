@@ -1141,6 +1141,12 @@ void GDScriptTokenizerText::check_indent() {
 			if (line_continuation || multiline_mode) {
 				return;
 			}
+			// Implicit dot-continuation: if the line starts with '.' (not followed by a digit,
+			// which would be a float literal), treat it as a continuation of the previous expression.
+			if (current_indent_char == '.' && !is_digit(_peek(1))) {
+				pending_newline = false;
+				return;
+			}
 			pending_indents -= indent_level();
 			indent_stack.clear();
 			return;
@@ -1229,6 +1235,13 @@ void GDScriptTokenizerText::check_indent() {
 		if (line_continuation || multiline_mode) {
 			// We cleared up all the whitespace at the beginning of the line.
 			// If this is a line continuation or we're in multiline mode then we don't want any indentation changes.
+			return;
+		}
+
+		// Implicit dot-continuation: if the next non-whitespace character is '.' (not followed
+		// by a digit, which would be a float literal), treat it as a continuation.
+		if (_peek() == '.' && !is_digit(_peek(1))) {
+			pending_newline = false;
 			return;
 		}
 
