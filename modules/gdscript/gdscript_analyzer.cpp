@@ -3943,6 +3943,32 @@ void GDScriptAnalyzer::reduce_get_node(GDScriptParser::GetNodeNode *p_get_node) 
 	result.kind = GDScriptParser::DataType::NATIVE;
 	result.builtin_type = Variant::OBJECT;
 	result.native_type = SNAME("Node");
+
+	// Try to infer a more specific type from the node name.
+	// If the last path component matches a known Node-derived class, use that type.
+	String node_name = p_get_node->full_path;
+	int last_slash = node_name.rfind("/");
+	if (last_slash >= 0) {
+		node_name = node_name.substr(last_slash + 1);
+	}
+	// Strip unique name prefix (%).
+	if (node_name.begins_with("%")) {
+		node_name = node_name.substr(1);
+	}
+	StringName class_name = StringName(node_name);
+	if (ClassDB::class_exists(class_name) && ClassDB::is_parent_class(class_name, SNAME("Node"))) {
+		result.native_type = class_name;
+	} else if (ScriptServer::is_global_class(class_name)) {
+		StringName native_base = ScriptServer::get_global_class_native_base(class_name);
+		if (ClassDB::is_parent_class(native_base, SNAME("Node"))) {
+			GDScriptParser::DataType meta_type = make_global_class_meta_type(class_name, p_get_node);
+			if (meta_type.kind != GDScriptParser::DataType::VARIANT) {
+				result = type_from_metatype(meta_type);
+				result.type_source = GDScriptParser::DataType::ANNOTATED_EXPLICIT;
+			}
+		}
+	}
+
 	p_get_node->set_datatype(result);
 }
 
