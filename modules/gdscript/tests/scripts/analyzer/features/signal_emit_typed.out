@@ -1,0 +1,5 @@
+GDTEST_OK
+~~ WARNING at line 8: (RETURN_VALUE_DISCARDED) The function "connect()" returns a value that will be discarded if not used.
+~~ WARNING at line 14: (RETURN_VALUE_DISCARDED) The function "connect()" returns a value that will be discarded if not used.
+value=42 name=hello
+no_args emitted

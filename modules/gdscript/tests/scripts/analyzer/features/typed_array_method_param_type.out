@@ -1,0 +1,7 @@
+GDTEST_OK
+~~ WARNING at line 17: (RETURN_VALUE_DISCARDED) The function "insert()" returns a value that will be discarded if not used.
+[1, 2, 3, 4, 5]
+[0, 1, 2, 3, 4, 5]
+["x", "x", "x"]
+42
+99
