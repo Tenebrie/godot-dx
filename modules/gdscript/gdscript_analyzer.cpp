@@ -3738,9 +3738,12 @@ void GDScriptAnalyzer::reduce_call(GDScriptParser::CallNode *p_call, bool p_is_a
 		}
 
 		if (method_flags.has_flag(METHOD_FLAG_STATIC) && !is_constructor && !base_type.is_meta_type && !is_self) {
-			String caller_type = base_type.to_string();
-
-			parser->push_warning(p_call, GDScriptWarning::STATIC_CALLED_ON_INSTANCE, p_call->function_name, caller_type);
+			// Suppress warning for Script[T] types — calling static methods on a script reference is intended.
+			bool is_script_type_ref = !base_type.container_element_types.is_empty() && ClassDB::is_parent_class(base_type.native_type, SNAME("Script"));
+			if (!is_script_type_ref) {
+				String caller_type = base_type.to_string();
+				parser->push_warning(p_call, GDScriptWarning::STATIC_CALLED_ON_INSTANCE, p_call->function_name, caller_type);
+			}
 		}
 
 		// Consider `emit_signal()`, `connect()`, and `disconnect()` as implicit uses of the signal.
@@ -5993,6 +5996,17 @@ bool GDScriptAnalyzer::get_function_signature(GDScriptParser::Node *p_source, bo
 		} else {
 			push_error("Cannot call function on enum value.", p_source);
 			return false;
+		}
+	}
+
+	// For Script[T] types (e.g. GDScript[Perk]), try resolving the function from the constraint
+	// type T as a meta-type first. This allows calling static methods of the constrained class
+	// (e.g. perkClass.Build() where Build is a static method on Perk).
+	if (!p_is_constructor && p_base_type.has_container_element_type(0) && ClassDB::is_parent_class(p_base_type.native_type, SNAME("Script"))) {
+		GDScriptParser::DataType constraint_type = p_base_type.get_container_element_type(0);
+		constraint_type.is_meta_type = true;
+		if (get_function_signature(p_source, false, constraint_type, p_function, r_return_type, r_par_types, r_default_arg_count, r_method_flags, r_native_class)) {
+			return true;
 		}
 	}
 

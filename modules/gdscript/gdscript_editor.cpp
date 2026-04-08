@@ -1446,6 +1446,14 @@ static void _find_identifiers_in_base(const GDScriptCompletionIdentifier &p_base
 					return;
 				}
 
+				// For Script[T] types, also include identifiers from the constraint type T as meta-type.
+				if (base_type.has_container_element_type(0) && ClassDB::is_parent_class(type, SNAME("Script"))) {
+					GDScriptCompletionIdentifier constraint_base;
+					constraint_base.type = base_type.get_container_element_type(0);
+					constraint_base.type.is_meta_type = true;
+					_find_identifiers_in_base(constraint_base, p_only_functions, p_types_only, p_add_braces, r_result, p_recursion_depth + 1);
+				}
+
 				List<StringName> enums;
 				ClassDB::get_enum_list(type, &enums);
 				for (const StringName &E : enums) {
@@ -4149,6 +4157,15 @@ static Error _lookup_symbol_from_base(const GDScriptParser::DataType &p_base, co
 				const StringName &class_name = base_type.native_type;
 
 				ERR_FAIL_COND_V(!GDScriptAnalyzer::class_exists(class_name), ERR_BUG);
+
+				// For Script[T] types, try resolving the symbol from the constraint type first.
+				if (base_type.has_container_element_type(0) && ClassDB::is_parent_class(class_name, SNAME("Script"))) {
+					GDScriptParser::DataType constraint_type = base_type.get_container_element_type(0);
+					constraint_type.is_meta_type = true;
+					if (_lookup_symbol_from_base(constraint_type, p_symbol, r_result) == OK) {
+						return OK;
+					}
+				}
 
 				if (ClassDB::has_method(class_name, p_symbol, true)) {
 					r_result.type = ScriptLanguage::LOOKUP_RESULT_CLASS_METHOD;
