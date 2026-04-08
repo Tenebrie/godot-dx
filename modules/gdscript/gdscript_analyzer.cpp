@@ -3709,7 +3709,86 @@ void GDScriptAnalyzer::reduce_call(GDScriptParser::CallNode *p_call, bool p_is_a
 			}
 		}
 
-		validate_call_arg(par_types, default_arg_count, method_flags.has_flag(METHOD_FLAG_VARARG), p_call);
+		// Helper: get the signal's parameter DataTypes directly from the signal declaration
+		// (avoids lossy round-trip through PropertyInfo for CLASS types).
+		auto get_signal_param_types = [&](const GDScriptParser::DataType &p_signal_type) -> Vector<GDScriptParser::DataType> {
+			Vector<GDScriptParser::DataType> result;
+			const MethodInfo &signal_mi = p_signal_type.method_info;
+
+			// Try to find the signal node in the current class hierarchy for accurate types.
+			const GDScriptParser::ClassNode *check_class = parser->current_class;
+			while (check_class != nullptr) {
+				if (check_class->has_member(signal_mi.name)) {
+					const GDScriptParser::ClassNode::Member &member = check_class->get_member(signal_mi.name);
+					if (member.type == GDScriptParser::ClassNode::Member::SIGNAL) {
+						for (int i = 0; i < member.signal->parameters.size(); i++) {
+							result.push_back(member.signal->parameters[i]->get_datatype());
+						}
+						return result;
+					}
+				}
+				if (check_class->base_type.kind == GDScriptParser::DataType::CLASS) {
+					check_class = check_class->base_type.class_type;
+				} else {
+					break;
+				}
+			}
+
+			// Fallback: resolve types from MethodInfo, using global class resolution
+			// to get proper CLASS DataTypes instead of lossy SCRIPT types.
+			for (int i = 0; i < signal_mi.arguments.size(); i++) {
+				const PropertyInfo &arg = signal_mi.arguments[i];
+				if (arg.type == Variant::OBJECT && ScriptServer::is_global_class(arg.class_name)) {
+					GDScriptParser::DataType meta = make_global_class_meta_type(arg.class_name, p_call);
+					if (meta.kind != GDScriptParser::DataType::VARIANT) {
+						result.push_back(type_from_metatype(meta));
+						continue;
+					}
+				}
+				result.push_back(type_from_property(arg, true));
+			}
+			return result;
+		};
+
+		// Infer lambda parameter types from Signal.connect() using the signal's declared parameters.
+		if (base_type.kind == GDScriptParser::DataType::BUILTIN && base_type.builtin_type == Variant::SIGNAL &&
+				p_call->function_name == SNAME("connect")) {
+			Vector<GDScriptParser::DataType> signal_params = get_signal_param_types(base_type);
+			if (signal_params.size() > 0 && p_call->arguments.size() > 0) {
+				GDScriptParser::ExpressionNode *arg = p_call->arguments[0];
+				if (arg->type == GDScriptParser::Node::LAMBDA) {
+					GDScriptParser::LambdaNode *lambda = static_cast<GDScriptParser::LambdaNode *>(arg);
+					if (lambda->function != nullptr) {
+						for (int i = 0; i < lambda->function->parameters.size() && i < signal_params.size(); i++) {
+							GDScriptParser::ParameterNode *param = lambda->function->parameters[i];
+							if (param->datatype_specifier == nullptr && param->get_datatype().is_variant()) {
+								GDScriptParser::DataType inferred = signal_params[i];
+								inferred.type_source = GDScriptParser::DataType::ANNOTATED_INFERRED;
+								inferred.is_constant = false;
+								param->set_datatype(inferred);
+							}
+						}
+					}
+				}
+			}
+		}
+
+		// Override Signal.emit() parameter types with the signal's declared parameters.
+		bool is_signal_emit_vararg = method_flags.has_flag(METHOD_FLAG_VARARG);
+		if (base_type.kind == GDScriptParser::DataType::BUILTIN && base_type.builtin_type == Variant::SIGNAL &&
+				p_call->function_name == SNAME("emit")) {
+			Vector<GDScriptParser::DataType> signal_params = get_signal_param_types(base_type);
+			if (signal_params.size() > 0) {
+				par_types.clear();
+				for (int i = 0; i < signal_params.size(); i++) {
+					par_types.push_back(signal_params[i]);
+				}
+				default_arg_count = 0;
+				is_signal_emit_vararg = false;
+			}
+		}
+
+		validate_call_arg(par_types, default_arg_count, is_signal_emit_vararg, p_call);
 
 		if (base_type.kind == GDScriptParser::DataType::ENUM && base_type.is_meta_type) {
 			// Enum type is treated as a dictionary value for function calls.

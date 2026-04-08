@@ -3256,6 +3256,34 @@ static void _list_call_arguments(GDScriptParser::CompletionContext &p_context, c
 				base_type.kind = GDScriptParser::DataType::UNRESOLVED;
 			} break;
 			case GDScriptParser::DataType::BUILTIN: {
+				// For Signal.emit()/connect(), use the signal's declared parameter types for the hint.
+				if (base_type.builtin_type == Variant::SIGNAL && base_type.method_info.arguments.size() > 0) {
+					if (method == SNAME("emit")) {
+						r_arghint = _make_arguments_hint(base_type.method_info, p_argidx);
+						return;
+					} else if (method == SNAME("connect")) {
+						// Build a hint that shows the signal's parameters in the lambda.
+						MethodInfo connect_mi;
+						connect_mi.name = "connect";
+
+						// First arg: Callable (show signal signature as context).
+						PropertyInfo callable_arg;
+						callable_arg.type = Variant::CALLABLE;
+						callable_arg.name = "callable";
+						connect_mi.arguments.push_back(callable_arg);
+
+						// Second arg: flags.
+						PropertyInfo flags_arg;
+						flags_arg.type = Variant::INT;
+						flags_arg.name = "flags";
+						connect_mi.arguments.push_back(flags_arg);
+						connect_mi.default_arguments.push_back(0);
+
+						r_arghint = _make_arguments_hint(connect_mi, p_argidx);
+						return;
+					}
+				}
+
 				if (base.get_type() == Variant::NIL) {
 					Callable::CallError err;
 					Variant::construct(base_type.builtin_type, base, nullptr, 0, err);
