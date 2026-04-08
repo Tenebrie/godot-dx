@@ -786,6 +786,15 @@ GDScriptParser::DataType GDScriptAnalyzer::resolve_datatype(GDScriptParser::Type
 			result.kind = GDScriptParser::DataType::NATIVE;
 			result.builtin_type = Variant::OBJECT;
 			result.native_type = first;
+
+			// Allow typed script references: Script[MyClass] or GDScript[MyClass].
+			if (ClassDB::is_parent_class(first, SNAME("Script"))) {
+				GDScriptParser::DataType container_type = type_from_metatype(resolve_datatype(p_type->get_container_type_or_null(0)));
+				if (container_type.kind != GDScriptParser::DataType::VARIANT) {
+					container_type.is_constant = false;
+					result.set_container_element_type(0, container_type);
+				}
+			}
 		} else if (ScriptServer::is_global_class(first)) {
 			if (GDScript::is_canonically_equal_paths(parser->script_path, ScriptServer::get_global_class_path(first))) {
 				result = parser->head->get_datatype();
@@ -949,8 +958,13 @@ GDScriptParser::DataType GDScriptAnalyzer::resolve_datatype(GDScriptParser::Type
 				push_error(R"(Typed dictionaries require exactly two collection element types.)", p_type);
 				return bad_type;
 			}
+		} else if (result.kind == GDScriptParser::DataType::NATIVE && ClassDB::is_parent_class(result.native_type, SNAME("Script"))) {
+			if (p_type->container_types.size() != 1) {
+				push_error(R"(Typed script references require exactly one type parameter.)", p_type);
+				return bad_type;
+			}
 		} else {
-			push_error(R"(Only arrays and dictionaries can specify collection element types.)", p_type);
+			push_error(R"(Only arrays, dictionaries, and script types can specify collection element types.)", p_type);
 			return bad_type;
 		}
 	}
@@ -3748,6 +3762,13 @@ void GDScriptAnalyzer::reduce_call(GDScriptParser::CallNode *p_call, bool p_is_a
 #endif // DEBUG_ENABLED
 
 		call_type = return_type;
+
+		// For typed script references (e.g., GDScript[Ability]): .new() returns the element type.
+		if (p_call->function_name == SNAME("new") && base_type.has_container_element_type(0) &&
+				base_type.kind == GDScriptParser::DataType::NATIVE && ClassDB::is_parent_class(base_type.native_type, SNAME("Script"))) {
+			call_type = base_type.get_container_element_type(0);
+			call_type.is_meta_type = false;
+		}
 	} else {
 		bool found = false;
 
@@ -6499,7 +6520,22 @@ bool GDScriptAnalyzer::check_type_compatibility(const GDScriptParser::DataType &
 			if (p_target.is_meta_type) {
 				return ClassDB::is_parent_class(src_native, GDScriptNativeClass::get_class_static());
 			}
-			return ClassDB::is_parent_class(src_native, p_target.native_type);
+			if (!ClassDB::is_parent_class(src_native, p_target.native_type)) {
+				return false;
+			}
+			// For typed script references (e.g., GDScript[Ability]): verify the source class extends the constraint.
+			if (p_target.has_container_element_type(0) && ClassDB::is_parent_class(p_target.native_type, SNAME("Script"))) {
+				const GDScriptParser::DataType &constraint = p_target.get_container_element_type(0);
+				// The source must be a meta-type (class reference) to check its inheritance.
+				if (p_source.is_meta_type) {
+					// Check if the source class extends the constraint.
+					GDScriptParser::DataType source_as_instance = p_source;
+					source_as_instance.is_meta_type = false;
+					return check_type_compatibility(constraint, source_as_instance, p_allow_implicit_conversion);
+				}
+				// If source is not a meta-type (e.g., a GDScript variable), we can't verify at compile time.
+			}
+			return true;
 		}
 		case GDScriptParser::DataType::SCRIPT:
 			if (p_target.is_meta_type) {

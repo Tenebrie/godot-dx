@@ -5352,6 +5352,9 @@ String GDScriptParser::DataType::to_string() const {
 			if (is_meta_type) {
 				return GDScriptNativeClass::get_class_static();
 			}
+			if (has_container_element_type(0)) {
+				return vformat("%s[%s]", native_type.operator String(), get_container_element_type(0).to_string());
+			}
 			return native_type.operator String();
 		case CLASS:
 			if (class_type->identifier != nullptr) {
