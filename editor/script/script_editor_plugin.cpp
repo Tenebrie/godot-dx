@@ -2332,6 +2332,7 @@ bool ScriptEditor::edit(const Ref<Resource> &p_resource, int p_line, int p_col, 
 		teb->connect("request_save_previous_state", callable_mp(this, &ScriptEditor::_save_previous_state));
 		teb->connect("search_in_files_requested", callable_mp(this, &ScriptEditor::open_find_in_files_dialog));
 		teb->connect("replace_in_files_requested", callable_mp(this, &ScriptEditor::_on_replace_in_files_requested));
+		teb->connect("find_all_references_requested", callable_mp(this, &ScriptEditor::_on_find_all_references_requested));
 		teb->connect("go_to_method", callable_mp(this, &ScriptEditor::script_goto_method));
 
 		if (script_editor_cache->has_section(p_resource->get_path())) {
@@ -3647,6 +3648,160 @@ void ScriptEditor::_on_replace_in_files_requested(const String &text) {
 	find_in_files_dialog->set_search_text(text);
 	find_in_files_dialog->set_replace_text("");
 	find_in_files_dialog->popup_centered();
+}
+
+static String _build_code_with_cursor(const String &p_code, int p_line, int p_column) {
+	PackedStringArray lines = p_code.split("\n");
+	String result;
+	for (int i = 0; i < lines.size(); i++) {
+		if (i == p_line && p_column >= 0 && p_column <= lines[i].length()) {
+			result += lines[i].substr(0, p_column);
+			result += String::chr(0xFFFF);
+			result += lines[i].substr(p_column);
+		} else {
+			result += lines[i];
+		}
+		if (i < lines.size() - 1) {
+			result += "\n";
+		}
+	}
+	return result;
+}
+
+static bool _lookup_results_match(const ScriptLanguage::LookupResult &a, const ScriptLanguage::LookupResult &b) {
+	// For script-defined symbols: compare script path and definition line.
+	if (a.location >= 0 && b.location >= 0 &&
+			!a.script_path.is_empty() && !b.script_path.is_empty()) {
+		return a.script_path == b.script_path && a.location == b.location;
+	}
+	// For engine symbols: compare class name and member.
+	if (!a.class_name.is_empty() && !b.class_name.is_empty()) {
+		if (a.class_member.is_empty() && b.class_member.is_empty()) {
+			return a.class_name == b.class_name;
+		}
+		return a.class_name == b.class_name && a.class_member == b.class_member;
+	}
+	return false;
+}
+
+static void _collect_gd_files(const String &p_dir, List<String> &r_files) {
+	Ref<DirAccess> dir = DirAccess::open(p_dir);
+	if (dir.is_null()) {
+		return;
+	}
+
+	String project_data_dir_name = ProjectSettings::get_singleton()->get_project_data_dir_name();
+
+	dir->list_dir_begin();
+	String file = dir->get_next();
+	while (!file.is_empty()) {
+		if (!file.begins_with(".") && file != project_data_dir_name) {
+			if (dir->current_is_dir()) {
+				_collect_gd_files(p_dir.path_join(file), r_files);
+			} else if (file.get_extension() == "gd") {
+				r_files.push_back(p_dir.path_join(file));
+			}
+		}
+		file = dir->get_next();
+	}
+}
+
+void ScriptEditor::_on_find_all_references_requested(const String &p_symbol, int p_line, int p_column) {
+	// Get current script and editor context.
+	TextEditorBase *current = Object::cast_to<TextEditorBase>(_get_current_editor());
+	if (!current) {
+		return;
+	}
+
+	Ref<Script> script = current->get_edited_resource();
+	if (script.is_null() || script->get_language() == nullptr) {
+		return;
+	}
+
+	CodeTextEditor *cte = current->get_code_editor();
+	if (!cte) {
+		return;
+	}
+
+	ScriptLanguage *lang = script->get_language();
+
+	// Resolve the origin symbol to find its definition.
+	String origin_code = cte->get_text_editor()->get_text_with_cursor_char(p_line, p_column);
+	ScriptLanguage::LookupResult origin_result;
+	Error err = lang->lookup_code(origin_code, p_symbol, script->get_path(), nullptr, origin_result);
+	if (err != OK) {
+		return;
+	}
+
+	// For local variables/constants, only search the current file.
+	bool is_local = (origin_result.type == ScriptLanguage::LOOKUP_RESULT_LOCAL_VARIABLE ||
+			origin_result.type == ScriptLanguage::LOOKUP_RESULT_LOCAL_CONSTANT);
+
+	// Collect .gd files to search.
+	List<String> gd_files;
+	if (is_local) {
+		gd_files.push_back(script->get_path());
+	} else {
+		_collect_gd_files("res://", gd_files);
+	}
+
+	// Get current editor's content (may have unsaved changes).
+	String origin_path = script->get_path();
+	String origin_content = cte->get_text_editor()->get_text();
+
+	// Prepare the results panel.
+	FindInFilesPanel *panel = find_in_files->get_panel_for_results(TTR("References:") + " " + p_symbol);
+	panel->clear_results(p_symbol);
+	panel->set_with_replace(false);
+
+	// Search each file for the symbol and verify each match.
+	for (const String &file_path : gd_files) {
+		String content;
+		if (file_path == origin_path) {
+			content = origin_content;
+		} else {
+			content = FileAccess::get_file_as_string(file_path);
+		}
+		if (content.is_empty()) {
+			continue;
+		}
+
+		PackedStringArray lines = content.split("\n");
+
+		for (int line_idx = 0; line_idx < lines.size(); line_idx++) {
+			const String &line = lines[line_idx];
+			int search_from = 0;
+
+			while (true) {
+				int pos = line.find(p_symbol, search_from);
+				if (pos < 0) {
+					break;
+				}
+				search_from = pos + p_symbol.length();
+
+				// Whole word check.
+				if (pos > 0 && is_ascii_identifier_char(line[pos - 1])) {
+					continue;
+				}
+				int end_pos = pos + p_symbol.length();
+				if (end_pos < line.length() && is_ascii_identifier_char(line[end_pos])) {
+					continue;
+				}
+
+				// Verify with lookup_code: does this occurrence resolve to the same definition?
+				String test_code = _build_code_with_cursor(content, line_idx, pos);
+				ScriptLanguage::LookupResult test_result;
+				Error verify_err = lang->lookup_code(test_code, p_symbol, file_path, nullptr, test_result);
+
+				if (verify_err == OK && _lookup_results_match(origin_result, test_result)) {
+					panel->add_result(file_path, line_idx + 1, pos, end_pos, line);
+				}
+			}
+		}
+	}
+
+	panel->finish_adding_results();
+	find_in_files->make_visible();
 }
 
 void ScriptEditor::_on_find_in_files_result_selected(const String &fpath, int line_number, int begin, int end) {

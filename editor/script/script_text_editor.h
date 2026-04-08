@@ -118,6 +118,7 @@ class ScriptTextEditor : public CodeEditorBase {
 		SHOW_TOOLTIP_AT_CARET,
 		HELP_CONTEXTUAL,
 		LOOKUP_SYMBOL,
+		FIND_ALL_REFERENCES,
 	};
 
 	enum COLOR_MODE {
@@ -192,6 +193,7 @@ protected:
 
 	void _lookup_symbol(const String &p_symbol, int p_row, int p_column);
 	void _validate_symbol(const String &p_symbol);
+	void _find_all_references(const String &p_symbol, int p_line, int p_column);
 
 	void _show_symbol_tooltip(const String &p_symbol, int p_row, int p_column, bool p_shortcut = false);
 

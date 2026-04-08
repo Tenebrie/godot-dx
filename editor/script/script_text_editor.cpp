@@ -187,6 +187,7 @@ ScriptTextEditor::EditMenusSTE::EditMenusSTE() {
 	goto_menu->get_popup()->add_shortcut(ED_GET_SHORTCUT("script_text_editor/goto_function"), SEARCH_LOCATE_FUNCTION);
 	_popup_move_item(SEARCH_GOTO_LINE, goto_menu->get_popup(), false);
 	goto_menu->get_popup()->add_shortcut(ED_GET_SHORTCUT("script_text_editor/goto_symbol"), LOOKUP_SYMBOL);
+	goto_menu->get_popup()->add_shortcut(ED_GET_SHORTCUT("script_text_editor/find_all_references"), FIND_ALL_REFERENCES);
 	_popup_move_item(SEARCH_GOTO_LINE, goto_menu->get_popup());
 
 	edit_menu_fold->add_shortcut(ED_GET_SHORTCUT("script_text_editor/create_code_region"), EDIT_CREATE_CODE_REGION);
@@ -1283,7 +1284,18 @@ void ScriptTextEditor::_lookup_symbol(const String &p_symbol, int p_row, int p_c
 				} break;
 			}
 		} else if (result.location >= 0) {
+			// Check if the lookup resolves to the current location (i.e., we're already on the definition).
+			// In that case, fall back to Find All References instead.
+			bool is_same_location = false;
 			if (result.script.is_valid()) {
+				is_same_location = (result.script->get_path() == script->get_path() && result.location - 1 == p_row);
+			} else {
+				is_same_location = (result.location - 1 == p_row);
+			}
+
+			if (is_same_location) {
+				_find_all_references(p_symbol, p_row, p_column);
+			} else if (result.script.is_valid()) {
 				emit_signal(SNAME("request_open_script_at_line"), result.script, result.location - 1);
 			} else {
 				emit_signal(SNAME("request_save_history"));
@@ -1303,6 +1315,10 @@ void ScriptTextEditor::_lookup_symbol(const String &p_symbol, int p_row, int p_c
 			EditorNode::get_singleton()->load_scene_or_resource(path);
 		}
 	}
+}
+
+void ScriptTextEditor::_find_all_references(const String &p_symbol, int p_line, int p_column) {
+	emit_signal(SNAME("find_all_references_requested"), p_symbol, p_line, p_column);
 }
 
 void ScriptTextEditor::_validate_symbol(const String &p_symbol) {
@@ -1844,6 +1860,15 @@ bool ScriptTextEditor::_edit_option(int p_op) {
 			}
 			if (!text.is_empty()) {
 				_lookup_symbol(text, tx->get_caret_line(0), tx->get_caret_column(0));
+			}
+		} break;
+		case FIND_ALL_REFERENCES: {
+			String text = tx->get_word_under_caret(0);
+			if (text.is_empty()) {
+				text = tx->get_selected_text(0);
+			}
+			if (!text.is_empty()) {
+				_find_all_references(text, tx->get_caret_line(0), tx->get_caret_column(0));
 			}
 		} break;
 		default: {
@@ -2592,6 +2617,7 @@ void ScriptTextEditor::_make_context_menu(bool p_selection, bool p_color, bool p
 		context_menu->add_separator();
 		if (p_open_docs) {
 			context_menu->add_shortcut(ED_GET_SHORTCUT("script_text_editor/goto_symbol"), LOOKUP_SYMBOL);
+			context_menu->add_shortcut(ED_GET_SHORTCUT("script_text_editor/find_all_references"), FIND_ALL_REFERENCES);
 		}
 		if (p_color) {
 			context_menu->add_item(TTRC("Pick Color"), EDIT_PICK_COLOR);
@@ -2664,6 +2690,7 @@ void ScriptTextEditor::register_editor() {
 	ED_SHORTCUT("script_text_editor/goto_line", TTRC("Go to Line..."), KeyModifierMask::CMD_OR_CTRL | Key::G);
 	ED_SHORTCUT_OVERRIDE("script_text_editor/goto_line", "macos", KeyModifierMask::CMD_OR_CTRL | Key::L);
 	ED_SHORTCUT("script_text_editor/goto_symbol", TTRC("Lookup Symbol"));
+	ED_SHORTCUT("script_text_editor/find_all_references", TTRC("Find All References"), KeyModifierMask::SHIFT | Key::F12);
 
 	ED_SHORTCUT("script_text_editor/toggle_breakpoint", TTRC("Toggle Breakpoint"), Key::F9);
 	ED_SHORTCUT_OVERRIDE("script_text_editor/toggle_breakpoint", "macos", KeyModifierMask::META | KeyModifierMask::SHIFT | Key::B);

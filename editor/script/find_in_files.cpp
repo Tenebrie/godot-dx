@@ -1304,6 +1304,19 @@ void FindInFilesPanel::update_matches_text() {
 	}
 }
 
+void FindInFilesPanel::add_result(const String &fpath, int line_number, int begin, int end, const String &text) {
+	_on_result_found(fpath, line_number, begin, end, text);
+}
+
+void FindInFilesPanel::clear_results(const String &p_search_text) {
+	clear();
+	_search_text_label->set_text(p_search_text);
+}
+
+void FindInFilesPanel::finish_adding_results() {
+	_on_finished();
+}
+
 void FindInFilesPanel::_bind_methods() {
 	ClassDB::bind_method("_on_result_found", &FindInFilesPanel::_on_result_found);
 	ClassDB::bind_method("_on_finished", &FindInFilesPanel::_on_finished);

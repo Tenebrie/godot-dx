@@ -187,6 +187,10 @@ public:
 	void start_search();
 	void stop_search();
 
+	void add_result(const String &fpath, int line_number, int begin, int end, const String &text);
+	void clear_results(const String &p_search_text);
+	void finish_adding_results();
+
 	void update_layout(EditorDock::DockLayout p_layout);
 
 protected:
