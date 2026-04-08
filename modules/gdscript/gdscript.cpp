@@ -2846,6 +2846,8 @@ GDScriptLanguage::GDScriptLanguage() {
 
 	GLOBAL_DEF("debug/gdscript/warnings/enable", true);
 
+	GLOBAL_DEF("debug/gdscript/type_inference/infer_type_from_assignment", false);
+
 	GLOBAL_DEF(PropertyInfo(Variant::DICTIONARY,
 					   "debug/gdscript/warnings/directory_rules",
 					   PROPERTY_HINT_TYPE_STRING,

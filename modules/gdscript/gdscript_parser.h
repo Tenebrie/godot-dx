@@ -1378,6 +1378,7 @@ private:
 	};
 
 	static bool is_project_ignoring_warnings;
+	static bool infer_type_from_assignment;
 	static GDScriptWarning::WarnLevel warning_levels[GDScriptWarning::WARNING_MAX];
 	static LocalVector<WarningDirectoryRule> warning_directory_rules;
 

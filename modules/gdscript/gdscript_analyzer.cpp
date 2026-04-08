@@ -2139,9 +2139,18 @@ void GDScriptAnalyzer::resolve_assignable(GDScriptParser::AssignableNode *p_assi
 
 		if (p_assignable->infer_datatype) {
 			if (!initializer_type.is_set() || initializer_type.has_no_type() || !initializer_type.is_hard_type()) {
-				push_error(vformat(R"(Cannot infer the type of "%s" %s because the value doesn't have a set type.)", p_assignable->identifier->name, p_kind), p_assignable->initializer);
+				if (GDScriptParser::infer_type_from_assignment && !p_assignable->datatype_specifier) {
+					// Setting-driven inference: gracefully fall back to untyped instead of erroring.
+					p_assignable->infer_datatype = false;
+				} else {
+					push_error(vformat(R"(Cannot infer the type of "%s" %s because the value doesn't have a set type.)", p_assignable->identifier->name, p_kind), p_assignable->initializer);
+				}
 			} else if (initializer_type.kind == GDScriptParser::DataType::BUILTIN && initializer_type.builtin_type == Variant::NIL && !is_constant) {
-				push_error(vformat(R"(Cannot infer the type of "%s" %s because the value is "null".)", p_assignable->identifier->name, p_kind), p_assignable->initializer);
+				if (GDScriptParser::infer_type_from_assignment && !p_assignable->datatype_specifier) {
+					p_assignable->infer_datatype = false;
+				} else {
+					push_error(vformat(R"(Cannot infer the type of "%s" %s because the value is "null".)", p_assignable->identifier->name, p_kind), p_assignable->initializer);
+				}
 			}
 #ifdef DEBUG_ENABLED
 			if (initializer_type.is_hard_type() && initializer_type.is_variant()) {

@@ -71,6 +71,7 @@ Variant::Type GDScriptParser::get_builtin_type(const StringName &p_type) {
 
 #ifdef DEBUG_ENABLED
 bool GDScriptParser::is_project_ignoring_warnings = false;
+bool GDScriptParser::infer_type_from_assignment = false;
 GDScriptWarning::WarnLevel GDScriptParser::warning_levels[GDScriptWarning::WARNING_MAX];
 LocalVector<GDScriptParser::WarningDirectoryRule> GDScriptParser::warning_directory_rules;
 #endif // DEBUG_ENABLED
@@ -99,6 +100,7 @@ bool GDScriptParser::annotation_exists(const String &p_annotation_name) const {
 #ifdef DEBUG_ENABLED
 void GDScriptParser::update_project_settings() {
 	is_project_ignoring_warnings = !GLOBAL_GET("debug/gdscript/warnings/enable").booleanize();
+	infer_type_from_assignment = GLOBAL_GET("debug/gdscript/type_inference/infer_type_from_assignment").booleanize();
 
 	for (int i = 0; i < GDScriptWarning::WARNING_MAX; i++) {
 		const String setting_path = GDScriptWarning::get_setting_path_from_code((GDScriptWarning::Code)i);
@@ -1282,6 +1284,10 @@ GDScriptParser::VariableNode *GDScriptParser::parse_variable(bool p_is_static, b
 			push_error(R"(Expected expression for variable initial value after "=".)");
 		}
 		variable->assignments++;
+		// If the setting is enabled, infer the type from the initializer (like :=).
+		if (!variable->datatype_specifier && !variable->infer_datatype && infer_type_from_assignment) {
+			variable->infer_datatype = true;
+		}
 	}
 
 	if (p_allow_property && match(GDScriptTokenizer::Token::COLON)) {
