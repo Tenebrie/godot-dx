@@ -385,7 +385,18 @@ void CodeEdit::_notification(int p_what) {
 						}
 						title_pos.x = icon_area.position.x + icon_area.size.width + theme_cache.code_completion_icon_separation;
 
-						tl->set_width(code_completion_rect.size.width - (icon_area_size.x + theme_cache.code_completion_icon_separation));
+						int available_width = code_completion_rect.size.width - (icon_area_size.x + theme_cache.code_completion_icon_separation);
+
+						/* Calculate type text width to reserve space for it. */
+						int type_text_width = 0;
+						Ref<TextLine> type_tl;
+						if (!code_completion_options[l].type_text.is_empty()) {
+							type_tl.instantiate();
+							type_tl->add_string(code_completion_options[l].type_text, theme_cache.font, theme_cache.font_size, lang);
+							type_text_width = type_tl->get_size().x + 3 * theme_cache.code_completion_icon_separation;
+						}
+
+						tl->set_width(available_width - type_text_width);
 						if (rtl) {
 							if (code_completion_options[l].default_value.get_type() == Variant::COLOR) {
 								RS::get_singleton()->canvas_item_add_rect(ci, Rect2(Point2(code_completion_rect.position.x, icon_area.position.y), icon_area_size), (Color)code_completion_options[l].default_value);
@@ -414,6 +425,15 @@ void CodeEdit::_notification(int p_what) {
 							RS::get_singleton()->canvas_item_add_rect(ci, Rect2(match_pos + Point2(match_offset, 0), Size2(match_len, row_height)), theme_cache.code_completion_existing_color);
 						}
 						tl->draw(ci, title_pos, code_completion_options[l].font_color);
+
+						/* Draw type text right-aligned in dimmed color. */
+						if (type_tl.is_valid()) {
+							Point2 type_pos(code_completion_rect.position.x + code_completion_rect.size.width - type_text_width + theme_cache.code_completion_icon_separation, title_pos.y);
+
+							Color type_color = code_completion_options[l].font_color;
+							type_color.a *= 0.5;
+							type_tl->draw(ci, type_pos, type_color);
+						}
 					}
 
 					/* Draw a small scroll rectangle to show a position in the options. */
@@ -2453,7 +2473,7 @@ void CodeEdit::request_code_completion(bool p_force) {
 	queue_accessibility_update();
 }
 
-void CodeEdit::add_code_completion_option(CodeCompletionKind p_type, const String &p_display_text, const String &p_insert_text, const Color &p_text_color, const Ref<Resource> &p_icon, const Variant &p_value, int p_location) {
+void CodeEdit::add_code_completion_option(CodeCompletionKind p_type, const String &p_display_text, const String &p_insert_text, const Color &p_text_color, const Ref<Resource> &p_icon, const Variant &p_value, int p_location, const String &p_type_text) {
 	ScriptLanguage::CodeCompletionOption completion_option;
 	completion_option.kind = (ScriptLanguage::CodeCompletionKind)p_type;
 	completion_option.display = p_display_text;
@@ -2462,6 +2482,7 @@ void CodeEdit::add_code_completion_option(CodeCompletionKind p_type, const Strin
 	completion_option.icon = p_icon;
 	completion_option.default_value = p_value;
 	completion_option.location = p_location;
+	completion_option.type_text = p_type_text;
 	code_completion_option_submitted.push_back(completion_option);
 }
 
@@ -2488,6 +2509,7 @@ TypedArray<Dictionary> CodeEdit::get_code_completion_options() const {
 		option["icon"] = code_completion_options[i].icon;
 		option["location"] = code_completion_options[i].location;
 		option["default_value"] = code_completion_options[i].default_value;
+		option["type_text"] = code_completion_options[i].type_text;
 		completion_options[i] = option;
 	}
 	return completion_options;
@@ -2507,6 +2529,7 @@ Dictionary CodeEdit::get_code_completion_option(int p_index) const {
 	option["icon"] = code_completion_options[p_index].icon;
 	option["location"] = code_completion_options[p_index].location;
 	option["default_value"] = code_completion_options[p_index].default_value;
+	option["type_text"] = code_completion_options[p_index].type_text;
 	return option;
 }
 
@@ -3790,6 +3813,7 @@ void CodeEdit::_filter_code_completion_candidates_impl() {
 			option.icon = completion_options[i].get("icon");
 			option.location = completion_options[i].get("location");
 			option.default_value = completion_options[i].get("default_value");
+			option.type_text = completion_options[i].get("type_text");
 
 			int offset = 0;
 			if (option.default_value.get_type() == Variant::COLOR) {
@@ -3797,7 +3821,11 @@ void CodeEdit::_filter_code_completion_candidates_impl() {
 			}
 
 			if (theme_cache.font.is_valid()) {
-				max_width = MAX(max_width, theme_cache.font->get_string_size(option.display, HORIZONTAL_ALIGNMENT_LEFT, -1, theme_cache.font_size).width + offset);
+				int display_width = theme_cache.font->get_string_size(option.display, HORIZONTAL_ALIGNMENT_LEFT, -1, theme_cache.font_size).width + offset;
+				if (!option.type_text.is_empty()) {
+					display_width += theme_cache.font->get_string_size(option.type_text, HORIZONTAL_ALIGNMENT_LEFT, -1, theme_cache.font_size).width + 4 * theme_cache.code_completion_icon_separation;
+				}
+				max_width = MAX(max_width, display_width);
 			}
 			code_completion_options_new.push_back(option);
 		}
@@ -4011,7 +4039,11 @@ void CodeEdit::_filter_code_completion_candidates_impl() {
 
 			code_completion_options_new.push_back(option);
 			if (theme_cache.font.is_valid()) {
-				max_width = MAX(max_width, theme_cache.font->get_string_size(option.display, HORIZONTAL_ALIGNMENT_LEFT, -1, theme_cache.font_size).width + offset);
+				int display_width = theme_cache.font->get_string_size(option.display, HORIZONTAL_ALIGNMENT_LEFT, -1, theme_cache.font_size).width + offset;
+				if (!option.type_text.is_empty()) {
+					display_width += theme_cache.font->get_string_size(option.type_text, HORIZONTAL_ALIGNMENT_LEFT, -1, theme_cache.font_size).width + 4 * theme_cache.code_completion_icon_separation;
+				}
+				max_width = MAX(max_width, display_width);
 			}
 		}
 	}

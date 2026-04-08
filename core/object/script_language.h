@@ -319,6 +319,7 @@ public:
 		CodeCompletionKind kind = CODE_COMPLETION_KIND_PLAIN_TEXT;
 		String display;
 		String insert_text;
+		String type_text;
 		/**
 		 * Optional server side calculated insertion.
 		 *

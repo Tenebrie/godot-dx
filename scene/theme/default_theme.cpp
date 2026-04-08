@@ -533,7 +533,7 @@ void fill_default_theme(Ref<Theme> &theme, const Ref<Font> &default_font, const 
 	theme->set_color("search_result_border_color", "CodeEdit", Color(0.3, 0.3, 0.3, 0.4));
 
 	theme->set_constant("completion_lines", "CodeEdit", 7);
-	theme->set_constant("completion_max_width", "CodeEdit", 50);
+	theme->set_constant("completion_max_width", "CodeEdit", 60);
 	theme->set_constant("completion_scroll_width", "CodeEdit", 6);
 	theme->set_constant("line_spacing", "CodeEdit", Math::round(4 * scale));
 	theme->set_constant("outline_size", "CodeEdit", 0);
