@@ -3759,6 +3759,47 @@ static void _find_call_arguments(GDScriptParser::CompletionContext &p_context, c
 			if (!completion_context.node) {
 				break;
 			}
+
+			// Lambda parameter hint: when typing parameters of a lambda
+			// passed to signal.connect(), show the signal's expected lambda signature.
+			if (completion_context.node->type == GDScriptParser::Node::FUNCTION) {
+				const GDScriptParser::FunctionNode *lambda_func = static_cast<const GDScriptParser::FunctionNode *>(completion_context.node);
+				if (lambda_func->source_lambda != nullptr && completion_context.call.call != nullptr &&
+						completion_context.call.call->type == GDScriptParser::Node::CALL) {
+					const GDScriptParser::CallNode *outer_call = static_cast<const GDScriptParser::CallNode *>(completion_context.call.call);
+					if (outer_call->function_name == SNAME("connect") && outer_call->callee != nullptr &&
+							outer_call->callee->type == GDScriptParser::Node::SUBSCRIPT) {
+						const GDScriptParser::SubscriptNode *subscript = static_cast<const GDScriptParser::SubscriptNode *>(outer_call->callee);
+						if (subscript->base != nullptr) {
+							GDScriptParser::DataType base_type = subscript->base->get_datatype();
+							if (base_type.builtin_type == Variant::SIGNAL && base_type.method_info.arguments.size() > 0) {
+								int param_index = completion_context.current_argument;
+								// Build a call hint showing the expected lambda signature.
+								String hint = "(";
+								int i = 0;
+								for (const PropertyInfo &arg : base_type.method_info.arguments) {
+									if (i > 0) {
+										hint += ", ";
+									}
+									if (i == param_index) {
+										hint += String::chr(0xFFFF);
+									}
+									hint += arg.name + ": " + _get_visual_datatype(arg, true);
+									if (i == param_index) {
+										hint += String::chr(0xFFFF);
+									}
+									i++;
+								}
+								hint += ") -> void";
+								r_call_hint = hint;
+								r_forced = true;
+							}
+						}
+					}
+				}
+				break;
+			}
+
 			_find_call_arguments(completion_context, completion_context.node, completion_context.current_argument, options, r_forced, r_call_hint);
 		} break;
 		case GDScriptParser::COMPLETION_OVERRIDE_METHOD: {

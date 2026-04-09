@@ -1702,6 +1702,14 @@ bool GDScriptParser::parse_function_signature(FunctionNode *p_function, SuiteNod
 				break;
 			}
 
+			// For lambda parameters: temporarily expose the outer call context (e.g., signal.connect())
+			// so the completion system can suggest signal parameter names.
+			if (p_type == "lambda" && for_completion && completion_call_stack.size() >= 2) {
+				pop_completion_call(); // Remove lambda's placeholder to expose the outer call.
+				make_completion_context(COMPLETION_CALL_ARGUMENTS, p_function, (int)p_function->parameters.size());
+				push_completion_call(nullptr); // Restore lambda's placeholder.
+			}
+
 			bool is_rest = false;
 			if (match(GDScriptTokenizer::Token::PERIOD_PERIOD_PERIOD)) {
 				is_rest = true;
