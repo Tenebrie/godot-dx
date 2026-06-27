@@ -2318,7 +2318,7 @@ void TextEdit::gui_input(const Ref<InputEvent> &p_gui_input) {
 					emit_signal(SNAME("gutter_clicked"), hovered_gutter.y, hovered_gutter.x);
 					return;
 				}
-				int left_margin = Math::ceil(_get_current_stylebox()->get_margin(SIDE_LEFT));
+				int left_margin = get_line_start_margin();
 				if (mpos.x < left_margin + gutters_width + gutter_padding) {
 					return;
 				}
@@ -5119,7 +5119,7 @@ Rect2i TextEdit::get_rect_at_line_column(int p_line, int p_column) const {
 
 	Point2i pos, size;
 	pos.y = cache_entry.y_offset + get_line_height() * wrap_index;
-	pos.x = get_total_gutter_width() + Math::ceil(_get_current_stylebox()->get_margin(SIDE_LEFT)) + wrap_indent - get_h_scroll();
+	pos.x = get_total_gutter_width() + get_line_start_margin() + wrap_indent - get_h_scroll();
 
 	RID text_rid = text.get_line_data(p_line)->get_line_rid(wrap_index);
 	Vector2 col_bounds = TS->shaped_text_get_grapheme_bounds(text_rid, p_column);
@@ -5129,6 +5129,10 @@ Rect2i TextEdit::get_rect_at_line_column(int p_line, int p_column) const {
 	size.y = get_line_height();
 
 	return Rect2i(pos, size);
+}
+
+int TextEdit::get_line_start_margin() const {
+	return Math::ceil(_get_current_stylebox()->get_margin(SIDE_LEFT));
 }
 
 int TextEdit::get_minimap_line_at_pos(const Point2i &p_pos) const {
@@ -7025,12 +7029,16 @@ void TextEdit::set_syntax_highlighter(Ref<SyntaxHighlighter> p_syntax_highlighte
 		return;
 	}
 
+	if (syntax_highlighter.is_valid()) {
+		syntax_highlighter->disconnect_changed(callable_mp(this, &TextEdit::_syntax_highlighter_changed));
+	}
+
 	syntax_highlighter = p_syntax_highlighter;
 	if (syntax_highlighter.is_valid()) {
 		syntax_highlighter->set_text_edit(this);
+		syntax_highlighter->connect_changed(callable_mp(this, &TextEdit::_syntax_highlighter_changed));
 	}
-	_clear_syntax_highlighting_cache();
-	queue_redraw();
+	_syntax_highlighter_changed();
 }
 
 Ref<SyntaxHighlighter> TextEdit::get_syntax_highlighter() const {
@@ -7974,6 +7982,10 @@ void TextEdit::_paste_internal(int p_caret) {
 	// Paste a full line. Ignore '\r' characters that may have been added to the clipboard by the OS.
 	if (get_caret_count() == 1 && !has_selection(0) && !cut_copy_line.is_empty() && cut_copy_line == clipboard.remove_char('\r')) {
 		insert_text(clipboard, get_caret_line(), 0);
+
+		_update_scrollbars();
+		adjust_viewport_to_caret(0);
+
 		return;
 	}
 
@@ -8678,9 +8690,16 @@ void TextEdit::_update_scrollbars() {
 		update_minimum_size();
 	}
 
+	const Size2 combined_maximum_size = get_combined_maximum_size();
+	const Size2 style_minimum_size = style->get_minimum_size();
+	const bool fit_content_height_exceeds_maximum = fit_content_height && combined_maximum_size.y >= 0 &&
+			style_minimum_size.y + content_size_cache.y > combined_maximum_size.y;
+	const bool fit_content_width_exceeds_maximum = fit_content_width && combined_maximum_size.x >= 0 &&
+			style_minimum_size.x + content_size_cache.x > combined_maximum_size.x;
+
 	updating_scrolls = true;
 
-	if (!fit_content_height && total_rows > visible_rows) {
+	if ((!fit_content_height || fit_content_height_exceeds_maximum) && total_rows > visible_rows) {
 		double visible_rows_exact = (double)_get_control_height() / (double)get_line_height();
 		double fractional_visible_rows = visible_rows_exact - (double)visible_rows;
 		fractional_visible_rows = CLAMP(fractional_visible_rows, 0.0, 1.0);
@@ -8696,7 +8715,7 @@ void TextEdit::_update_scrollbars() {
 		v_scroll->hide();
 	}
 
-	if (total_width > visible_width) {
+	if ((!fit_content_width || fit_content_width_exceeds_maximum) && total_width > visible_width) {
 		h_scroll->show();
 		h_scroll->set_max(total_width);
 		h_scroll->set_page(visible_width);
@@ -9039,7 +9058,7 @@ void TextEdit::_update_gutter_width() {
 }
 
 Vector2i TextEdit::_get_hovered_gutter(const Point2 &p_mouse_pos) const {
-	int left_margin = Math::ceil(_get_current_stylebox()->get_margin(SIDE_LEFT));
+	int left_margin = get_line_start_margin();
 	if (p_mouse_pos.x > left_margin + gutters_width + gutter_padding) {
 		return Vector2i(-1, -1);
 	}
@@ -9092,6 +9111,11 @@ Vector<Pair<int64_t, Color>> TextEdit::_get_line_syntax_highlighting(int p_line)
 
 void TextEdit::_clear_syntax_highlighting_cache() {
 	syntax_highlighting_cache.clear();
+}
+
+void TextEdit::_syntax_highlighter_changed() {
+	_clear_syntax_highlighting_cache();
+	queue_redraw();
 }
 
 /* Deprecated. */
@@ -9349,6 +9373,9 @@ TextEdit::TextEdit(const String &p_placeholder) {
 
 	h_scroll = memnew(HScrollBar);
 	v_scroll = memnew(VScrollBar);
+
+	h_scroll->set_use_parent_material(true);
+	v_scroll->set_use_parent_material(true);
 
 	add_child(h_scroll, false, INTERNAL_MODE_FRONT);
 	add_child(v_scroll, false, INTERNAL_MODE_FRONT);

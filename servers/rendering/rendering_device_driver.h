@@ -484,6 +484,9 @@ public:
 	// Retrieve the color space used by the swap chain's framebuffers.
 	virtual ColorSpace swap_chain_get_color_space(SwapChainID p_swap_chain) = 0;
 
+	// Retrieve whether the swapchain supports our preferred HDR formats.
+	virtual bool swap_chain_get_hdr_output_supported(SwapChainID p_swap_chain) = 0;
+
 	// Tells the swapchain the max_fps so it can use the proper frame pacing.
 	// Android uses this with Swappy library. Some implementations or platforms may ignore this hint.
 	virtual void swap_chain_set_max_fps(SwapChainID p_swap_chain, int p_max_fps) {}
@@ -761,6 +764,7 @@ public:
 		Transform3D transform;
 		uint32_t id = 0;
 		uint8_t mask = 0;
+		uint32_t hit_sbt_offset = 0;
 		BitField<AccelerationStructureInstanceFlagBits> flags = {};
 		AccelerationStructureID blas;
 	};
@@ -773,8 +777,22 @@ public:
 
 	// ----- PIPELINE -----
 
-	virtual RaytracingPipelineID raytracing_pipeline_create(ShaderID p_shader, VectorView<PipelineSpecializationConstant> p_specialization_constants) = 0;
+	struct PipelineShader {
+		ShaderID shader;
+		VectorView<PipelineSpecializationConstant> specialization_constants;
+		ShaderStage shader_stage = {};
+	};
+
+	struct HitGroup {
+		uint32_t closest_hit_shader_index = UINT32_MAX;
+		uint32_t any_hit_shader_index = UINT32_MAX;
+		uint32_t intersection_shader_index = UINT32_MAX;
+	};
+
+	virtual RaytracingPipelineID raytracing_pipeline_create(VectorView<PipelineShader> p_shaders, VectorView<uint32_t> p_raygen_shader_indices, VectorView<uint32_t> p_miss_shader_indices, VectorView<HitGroup> p_hit_groups, uint32_t p_max_trace_recursion_depth, ShaderID p_layout_defining_shader) = 0;
 	virtual void raytracing_pipeline_free(RaytracingPipelineID p_pipeline) = 0;
+
+	virtual bool raytracing_pipeline_get_shader_group_handles(RaytracingPipelineID p_pipeline, uint32_t p_group_index_offset, VectorView<uint32_t> p_group_indices, uint8_t *r_data, uint32_t p_data_stride_bytes) = 0;
 
 	// ----- COMMANDS -----
 
@@ -782,7 +800,15 @@ public:
 	virtual void command_build_tlas(CommandBufferID p_cmd_buffer, AccelerationStructureID p_acceleration_structure, BufferID p_scratch_buffer, BufferID p_instance_buffer, uint32_t p_instance_offset, uint32_t p_instance_count) = 0;
 	virtual void command_bind_raytracing_pipeline(CommandBufferID p_cmd_buffer, RaytracingPipelineID p_pipeline) = 0;
 	virtual void command_bind_raytracing_uniform_set(CommandBufferID p_cmd_buffer, UniformSetID p_uniform_set, ShaderID p_shader, uint32_t p_set_index) = 0;
-	virtual void command_trace_rays(CommandBufferID p_cmd_buffer, uint32_t p_width, uint32_t p_height) = 0;
+
+	struct ShaderBindingTable {
+		BufferID buffer;
+		uint32_t offset = 0;
+		uint32_t stride = 0;
+		uint32_t size = 0;
+	};
+
+	virtual void command_trace_rays(CommandBufferID p_cmd_buffer, const ShaderBindingTable &p_raygen_sbt, const ShaderBindingTable &p_miss_sbt, const ShaderBindingTable &p_hit_sbt, uint32_t p_width, uint32_t p_height, uint32_t p_depth) = 0;
 
 	/******************/
 	/**** CALLBACK ****/
@@ -879,6 +905,9 @@ public:
 		API_TRAIT_BUFFERS_REQUIRE_TRANSITIONS,
 		API_TRAIT_TEXTURE_OUTPUTS_REQUIRE_CLEARS,
 		API_TRAIT_ACCELERATION_STRUCTURE_INSTANCE_SIZE,
+		API_TRAIT_SHADER_GROUP_HANDLE_SIZE,
+		API_TRAIT_SHADER_GROUP_BASE_ALIGNMENT,
+		API_TRAIT_SHADER_GROUP_HANDLE_ALIGNMENT,
 	};
 
 	enum ShaderChangeInvalidation {
@@ -920,6 +949,8 @@ public:
 	virtual const RenderingShaderContainerFormat &get_shader_container_format() const = 0;
 
 	virtual bool is_composite_alpha_supported(CommandQueueID p_queue) const { return false; }
+
+	virtual DriverWorkarounds get_driver_workarounds() const { return DriverWorkarounds(); }
 
 	/******************/
 
