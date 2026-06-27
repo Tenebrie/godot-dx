@@ -323,6 +323,7 @@ private:
 	bool _is_rotation_arc_visible() const;
 	void _select_clicked(bool p_allow_locked);
 	ObjectID _select_ray(const Point2 &p_pos) const;
+	ObjectID _select_ray_cycle(const Point2 &p_pos);
 	void _find_items_at_pos(const Point2 &p_pos, Vector<_RayResult> &r_results, bool p_include_locked);
 
 	float _min_screen_dist_to_aabb(const AABB &p_aabb, const Transform3D &p_transform, const Point2 &p_cursor) const;
@@ -364,6 +365,11 @@ private:
 	bool clicked_wants_append = false;
 	bool selection_in_progress = false;
 	bool movement_threshold_passed = false;
+
+	// State for cycling selection through overlapping objects on repeated clicks at the same spot.
+	Vector<ObjectID> cycle_items;
+	Point2 cycle_last_pos;
+	int cycle_index = 0;
 
 	PopupMenu *selection_menu = nullptr;
 

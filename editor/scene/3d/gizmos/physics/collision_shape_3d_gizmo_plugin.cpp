@@ -47,6 +47,7 @@
 #include "scene/resources/3d/separation_ray_shape_3d.h"
 #include "scene/resources/3d/sphere_shape_3d.h"
 #include "scene/resources/3d/world_boundary_shape_3d.h"
+#include "scene/resources/mesh.h"
 
 CollisionShape3DGizmoPlugin::CollisionShape3DGizmoPlugin() {
 	helper.instantiate();
@@ -325,10 +326,20 @@ void CollisionShape3DGizmoPlugin::redraw(EditorNode3DGizmo *p_gizmo) {
 
 	const Color collision_color = cs->is_disabled() ? Color(1.0, 1.0, 1.0, 0.75) : cs->get_debug_color();
 
-	if (cs->get_debug_fill_enabled()) {
-		Ref<ArrayMesh> array_mesh = s->get_debug_arraymesh_faces(collision_color);
-		if (array_mesh.is_valid() && array_mesh->get_surface_count() > 0) {
+	Ref<ArrayMesh> array_mesh = s->get_debug_arraymesh_faces(collision_color);
+	if (array_mesh.is_valid() && array_mesh->get_surface_count() > 0) {
+		if (cs->get_debug_fill_enabled()) {
 			p_gizmo->add_mesh(array_mesh, material_arraymesh);
+		}
+
+		// Register the shape's solid faces for picking so that clicking anywhere inside the
+		// shape's volume selects it, not just its wireframe edges. HeightMapShape3D is skipped:
+		// it is a surface rather than a closed volume and its mesh can be very large.
+		if (!Object::cast_to<HeightMapShape3D>(*s)) {
+			Ref<TriangleMesh> tmesh = array_mesh->generate_triangle_mesh();
+			if (tmesh.is_valid()) {
+				p_gizmo->add_collision_triangles(tmesh);
+			}
 		}
 	}
 

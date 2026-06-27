@@ -797,6 +797,54 @@ ObjectID Node3DEditorViewport::_select_ray(const Point2 &p_pos) const {
 	return closest;
 }
 
+ObjectID Node3DEditorViewport::_select_ray_cycle(const Point2 &p_pos) {
+	// Gather every selectable object under the cursor, sorted front-to-back, and resolve each
+	// to the node that would actually be selected (deepest editable node), de-duplicated.
+	Vector<_RayResult> results;
+	_find_items_at_pos(p_pos, results, false);
+
+	Node *edited_scene = get_tree()->get_edited_scene_root();
+	Vector<ObjectID> items;
+	for (const _RayResult &res : results) {
+		Node *item = res.item;
+		if (item && item != edited_scene) {
+			item = edited_scene->get_deepest_editable_node(item);
+		}
+		if (!item) {
+			continue;
+		}
+		const ObjectID id = item->get_instance_id();
+		if (!items.has(id)) {
+			items.push_back(id);
+		}
+	}
+
+	if (items.is_empty()) {
+		cycle_items.clear();
+		return ObjectID();
+	}
+
+	// A repeated click at (nearly) the same spot on the same set of objects advances to the next
+	// one, but only while the previously returned object is still the active selection. Any other
+	// situation (cursor moved, set changed, or selection changed elsewhere) restarts from the front.
+	const real_t cycle_tolerance = 8.0 * EDSCALE;
+	bool advance = cycle_last_pos.distance_to(p_pos) <= cycle_tolerance && items == cycle_items;
+	if (advance) {
+		Node *previous = ObjectDB::get_instance<Node>(items[cycle_index]);
+		if (previous && editor_selection->is_selected(previous)) {
+			cycle_index = (cycle_index + 1) % items.size();
+		} else {
+			cycle_index = 0;
+		}
+	} else {
+		cycle_index = 0;
+	}
+
+	cycle_items = items;
+	cycle_last_pos = p_pos;
+	return items[cycle_index];
+}
+
 float Node3DEditorViewport::_min_screen_dist_to_aabb(const AABB &p_aabb, const Transform3D &p_transform, const Point2 &p_cursor) const {
 	Vector3 first_corner = p_transform.xform(p_aabb.get_endpoint(0));
 	if (camera->is_position_behind(first_corner)) {
@@ -2544,7 +2592,24 @@ void Node3DEditorViewport::_sinput(const Ref<InputEvent> &p_event) {
 					if (after != EditorPlugin::AFTER_GUI_INPUT_CUSTOM) {
 						selection_in_progress = false;
 
-						if (clicked.is_valid() && _edit.mode == TRANSFORM_NONE) {
+						// A clean in-place click (no drag) that hit an object commits a selection.
+						// Route it through the cycle picker so that repeatedly clicking the same spot
+						// steps through every overlapping object front-to-back before wrapping around.
+						// Dragging sets movement_threshold_passed, so move/rotate/scale of an already
+						// selected object keeps working and never triggers cycling.
+						if (!movement_threshold_passed && !clicked_wants_append && clicked.is_valid()) {
+							const ObjectID cycled = _select_ray_cycle(b->get_position());
+							if (cycled.is_valid()) {
+								clicked = cycled;
+							}
+							// Cancel the no-op translate that clicking an already-selected object starts.
+							if (_edit.mode != TRANSFORM_NONE) {
+								_edit.mode = TRANSFORM_NONE;
+								set_message("");
+								spatial_editor->update_transform_gizmo();
+							}
+							_select_clicked(false);
+						} else if (clicked.is_valid() && _edit.mode == TRANSFORM_NONE) {
 							_select_clicked(false);
 						} else if (view_3d_controller->cursor.region_select) {
 							_select_region();
