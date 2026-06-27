@@ -42,6 +42,7 @@
 #include "core/object/class_db.h"
 #include "core/object/script_language.h"
 #include "core/templates/hash_map.h"
+#include "scene/main/asset.h"
 #include "scene/main/node.h"
 
 #if defined(TOOLS_ENABLED) && !defined(DISABLE_DEPRECATED)
@@ -3886,6 +3887,31 @@ void GDScriptAnalyzer::reduce_call(GDScriptParser::CallNode *p_call, bool p_is_a
 				base_type.kind == GDScriptParser::DataType::NATIVE && ClassDB::is_parent_class(base_type.native_type, SNAME("Script"))) {
 			call_type = base_type.get_container_element_type(0);
 			call_type.is_meta_type = false;
+		}
+
+		// `Asset.Instantiate(SomeClass)` returns an instance of `SomeClass` (built
+		// from the class's canonical scene). Infer the static return type from the
+		// class meta-type argument, and surface canonical-scene problems at edit
+		// time so the error is as instant as possible.
+		if (p_call->function_name == SNAME("Instantiate") && base_type.kind == GDScriptParser::DataType::NATIVE &&
+				base_type.native_type == SNAME("Asset") && p_call->arguments.size() == 1) {
+			const GDScriptParser::DataType arg_type = p_call->arguments[0]->get_datatype();
+			if (arg_type.is_meta_type && (arg_type.kind == GDScriptParser::DataType::SCRIPT || arg_type.kind == GDScriptParser::DataType::CLASS)) {
+				call_type = type_from_metatype(arg_type);
+
+				Asset *asset = Asset::get_singleton();
+				if (Engine::get_singleton()->is_editor_hint() && asset && asset->is_map_loaded()) {
+					const String script_path = arg_type.script_type.is_valid() ? arg_type.script_type->get_path() : arg_type.script_path;
+					if (!script_path.is_empty()) {
+						const int count = asset->get_scene_count_for_script(script_path);
+						if (count == 0) {
+							push_error(vformat(R"(Asset.Instantiate: no scene uses "%s" as its canonical (top-level, non-inherited) root script.)", script_path), p_call);
+						} else if (count > 1) {
+							push_error(vformat(R"(Asset.Instantiate: "%s" is the canonical root script of %d scenes; it must be exactly one.)", script_path, count), p_call);
+						}
+					}
+				}
+			}
 		}
 	} else {
 		bool found = false;

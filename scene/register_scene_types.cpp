@@ -98,6 +98,7 @@
 #include "scene/gui/tree.h"
 #include "scene/gui/video_stream_player.h"
 #include "scene/gui/virtual_joystick.h"
+#include "scene/main/asset.h"
 #include "scene/main/canvas_item.h"
 #include "scene/main/canvas_layer.h"
 #include "scene/main/http_request.h"
@@ -376,6 +377,8 @@
 
 static Ref<ResourceFormatSaverText> resource_saver_text;
 static Ref<ResourceFormatLoaderText> resource_loader_text;
+
+static Asset *asset_singleton = nullptr;
 
 static Ref<ResourceFormatLoaderCompressedTexture2D> resource_loader_stream_texture;
 static Ref<ResourceFormatLoaderCompressedTextureLayered> resource_loader_texture_layered;
@@ -1375,6 +1378,11 @@ void unregister_scene_types() {
 	GraphEdit::finish_shaders();
 	SceneStringNames::free();
 
+	if (asset_singleton) {
+		memdelete(asset_singleton);
+		asset_singleton = nullptr;
+	}
+
 	OS::get_singleton()->benchmark_end_measure("Scene", "Unregister Types");
 }
 
@@ -1384,6 +1392,10 @@ void register_scene_singletons() {
 	GDREGISTER_CLASS(ThemeDB);
 
 	Engine::get_singleton()->add_singleton(Engine::Singleton("ThemeDB", ThemeDB::get_singleton()));
+
+	GDREGISTER_CLASS(Asset);
+	asset_singleton = memnew(Asset);
+	Engine::get_singleton()->add_singleton(Engine::Singleton("Asset", Asset::get_singleton()));
 
 	OS::get_singleton()->benchmark_end_measure("Scene", "Register Singletons");
 }

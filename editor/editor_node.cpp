@@ -71,6 +71,7 @@
 #include "editor/editor_main_screen.h"
 #include "editor/editor_string_names.h"
 #include "editor/editor_undo_redo_manager.h"
+#include "editor/export/asset_map_export_plugin.h"
 #include "editor/export/dedicated_server_export_plugin.h"
 #include "editor/export/editor_export.h"
 #include "editor/export/export_template_manager.h"
@@ -80,6 +81,7 @@
 #include "editor/export/register_exporters.h"
 #include "editor/export/shader_baker_export_plugin.h"
 #include "editor/file_system/dependency_editor.h"
+#include "editor/file_system/editor_asset_map.h"
 #include "editor/file_system/editor_paths.h"
 #include "editor/gui/editor_about.h"
 #include "editor/gui/editor_bottom_panel.h"
@@ -9557,6 +9559,11 @@ EditorNode::EditorNode() {
 
 	EditorExport::get_singleton()->add_export_plugin(dedicated_server_export_plugin);
 
+	Ref<AssetMapExportPlugin> asset_map_export_plugin;
+	asset_map_export_plugin.instantiate();
+
+	EditorExport::get_singleton()->add_export_plugin(asset_map_export_plugin);
+
 	Ref<ShaderBakerExportPlugin> shader_baker_export_plugin;
 	shader_baker_export_plugin.instantiate();
 
@@ -9627,6 +9634,9 @@ EditorNode::EditorNode() {
 	EditorFileSystem::get_singleton()->connect("resources_reimporting", callable_mp(this, &EditorNode::_resources_reimporting));
 	EditorFileSystem::get_singleton()->connect("resources_reimported", callable_mp(this, &EditorNode::_resources_reimported));
 	EditorFileSystem::get_singleton()->connect("resources_reload", callable_mp(this, &EditorNode::_resources_changed));
+
+	asset_map = memnew(EditorAssetMap);
+	asset_map->connect_filesystem_signals();
 
 	_build_icon_type_cache();
 
@@ -9702,6 +9712,10 @@ EditorNode::~EditorNode() {
 #if defined(MODULE_GDSCRIPT_ENABLED) || defined(MODULE_MONO_ENABLED)
 	EditorHelpHighlighter::free_singleton();
 #endif
+	if (asset_map) {
+		memdelete(asset_map);
+		asset_map = nullptr;
+	}
 	memdelete(editor_selection);
 	memdelete(editor_plugins_over);
 	memdelete(editor_plugins_force_over);

@@ -96,6 +96,7 @@ class ExportTemplateManager;
 class EditorQuickOpenDialog;
 class FBXImporterManager;
 class FileSystemDock;
+class EditorAssetMap;
 class HistoryDock;
 class OrphanResourcesDialog;
 class ProgressDialog;
@@ -277,6 +278,7 @@ private:
 
 	ProjectExportDialog *project_export = nullptr;
 	ProjectSettingsEditor *project_settings_editor = nullptr;
+	EditorAssetMap *asset_map = nullptr;
 
 	FBXImporterManager *fbx_importer_manager = nullptr;
 
