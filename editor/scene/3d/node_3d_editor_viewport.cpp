@@ -2528,11 +2528,13 @@ void Node3DEditorViewport::_sinput(const Ref<InputEvent> &p_event) {
 
 						switch (spatial_editor->get_tool_mode()) {
 							case Node3DEditor::TOOL_MODE_TRANSFORM:
+								// Dragging the body of a selected object used to free-translate it on a
+								// view-aligned (arbitrary) plane. That is disabled: a plain body drag now
+								// region-selects instead (see the motion handler). Ctrl/Alt+Drag still
+								// rotate/translate deliberately.
 								if (b->is_command_or_control_pressed() && node_selected) {
 									mode = TRANSFORM_ROTATE;
 								} else if (b->is_alt_pressed() && node_selected) {
-									mode = TRANSFORM_TRANSLATE;
-								} else if (is_clicked_node_selected) {
 									mode = TRANSFORM_TRANSLATE;
 								}
 								break;
@@ -2745,7 +2747,10 @@ void Node3DEditorViewport::_sinput(const Ref<InputEvent> &p_event) {
 		} else if (m->get_button_mask().has_flag(MouseButtonMask::LEFT)) {
 			movement_threshold_passed = _edit.original_mouse_pos.distance_to(_edit.mouse_pos) > 8 * EDSCALE;
 
-			if ((selection_in_progress || clicked_wants_append || spatial_editor->get_tool_mode() == Node3DEditor::TOOL_MODE_SELECT) && movement_threshold_passed && clicked.is_valid() && !previewing) {
+			if ((selection_in_progress || clicked_wants_append ||
+						spatial_editor->get_tool_mode() == Node3DEditor::TOOL_MODE_SELECT ||
+						(spatial_editor->get_tool_mode() == Node3DEditor::TOOL_MODE_TRANSFORM && _edit.mode == TRANSFORM_NONE)) &&
+					movement_threshold_passed && clicked.is_valid() && !previewing) {
 				view_3d_controller->cursor.region_select = true;
 				view_3d_controller->cursor.region_begin = _edit.original_mouse_pos;
 				clicked = ObjectID();
