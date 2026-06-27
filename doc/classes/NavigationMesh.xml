@@ -97,6 +97,14 @@
 			[b]Note:[/b] While baking, this value will be rounded up to the nearest multiple of [member cell_size].
 			[b]Note:[/b] The radius must be equal or higher than [code]0.0[/code]. If the radius is [code]0.0[/code], it won't be possible to fix invalid outline overlaps and other precision errors during the baking process. As a result, some obstacles may be excluded incorrectly from the final navigation mesh, or may delete the navigation mesh's polygons.
 		</member>
+		<member name="baking_flat_enabled" type="bool" setter="set_baking_flat_enabled" getter="get_baking_flat_enabled" default="false">
+			If [code]true[/code], the navigation mesh is baked in flat mode. Instead of voxelizing the source geometry in 3D with Recast, the geometry is projected onto [member baking_flat_plane] and the navigation mesh is generated with fast 2D polygon clipping on that single plane.
+			Flat mode is orders of magnitude faster than the regular 3D bake and is suited for 2.5D or top-down games that only need a single walkable layer, e.g. for frequent dynamic rebakes. Source geometry triangles that rise above the plane by more than [member agent_max_climb] are treated as solid obstacle footprints (with a correct "inside"); triangles within that band and roughly parallel to the plane (within [member agent_max_slope]) are treated as walkable floor. [member agent_radius] erodes the walkable area as usual.
+			[b]Note:[/b] In flat mode the Recast-specific properties (cell size/height, regions, edges, details, sample partitioning) are ignored. The resulting navigation mesh polygons are flattened onto [member baking_flat_plane].
+		</member>
+		<member name="baking_flat_plane" type="Plane" setter="set_baking_flat_plane" getter="get_baking_flat_plane" default="Plane(0, 1, 0, 0)">
+			The plane the navigation mesh is generated on when [member baking_flat_enabled] is [code]true[/code]. The default is the horizontal plane at the world origin with its normal pointing up. The plane is defined in the local space of the source geometry root node.
+		</member>
 		<member name="border_size" type="float" setter="set_border_size" getter="get_border_size" default="0.0">
 			The size of the non-navigable border around the bake bounding area.
 			In conjunction with the [member filter_baking_aabb] and a [member edge_max_error] value at [code]1.0[/code] or below the border size can be used to bake tile aligned navigation meshes without the tile edges being shrunk by [member agent_radius].

@@ -39,6 +39,11 @@
 
 #include <Recast.h>
 
+#ifdef CLIPPER2_ENABLED
+#include <thirdparty/clipper2/include/clipper2/clipper.h>
+#include <thirdparty/misc/polypartition.h>
+#endif // CLIPPER2_ENABLED
+
 NavMeshGenerator3D *NavMeshGenerator3D::singleton = nullptr;
 Mutex NavMeshGenerator3D::baking_navmesh_mutex;
 Mutex NavMeshGenerator3D::generator_task_mutex;
@@ -302,6 +307,261 @@ void NavMeshGenerator3D::generator_parse_source_geometry_data(const Ref<Navigati
 	}
 }
 
+#ifdef CLIPPER2_ENABLED
+static void generator_recursive_process_polytree_items(List<TPPLPoly> &p_tppl_in_polygon, const Clipper2Lib::PolyPathD *p_polypath_item) {
+	using namespace Clipper2Lib;
+
+	TPPLPoly tp;
+	int size = p_polypath_item->Polygon().size();
+	tp.Init(size);
+
+	int j = 0;
+	for (const PointD &polypath_point : p_polypath_item->Polygon()) {
+		tp[j] = Vector2(static_cast<real_t>(polypath_point.x), static_cast<real_t>(polypath_point.y));
+		++j;
+	}
+
+	if (p_polypath_item->IsHole()) {
+		tp.SetOrientation(TPPL_ORIENTATION_CW);
+		tp.SetHole(true);
+	} else {
+		tp.SetOrientation(TPPL_ORIENTATION_CCW);
+	}
+	p_tppl_in_polygon.push_back(tp);
+
+	for (size_t i = 0; i < p_polypath_item->Count(); i++) {
+		const PolyPathD *polypath_item = p_polypath_item->Child(i);
+		generator_recursive_process_polytree_items(p_tppl_in_polygon, polypath_item);
+	}
+}
+
+// Builds a Clipper2 path set from projected obstructions, optionally filtered by carve flag.
+static void _flat_collect_projected_obstructions(Clipper2Lib::PathsD &r_paths, const Vector<NavigationMeshSourceGeometryData3D::ProjectedObstruction> &p_projected_obstructions, const Vector3 &p_basis_u, const Vector3 &p_basis_v, bool p_want_carve) {
+	using namespace Clipper2Lib;
+	for (const NavigationMeshSourceGeometryData3D::ProjectedObstruction &projected_obstruction : p_projected_obstructions) {
+		if (projected_obstruction.carve != p_want_carve) {
+			continue;
+		}
+		if (projected_obstruction.vertices.is_empty() || projected_obstruction.vertices.size() % 3 != 0) {
+			continue;
+		}
+		const int obstruction_vertex_count = projected_obstruction.vertices.size() / 3;
+		PathD clip_path;
+		clip_path.reserve(obstruction_vertex_count);
+		for (int i = 0; i < obstruction_vertex_count; i++) {
+			const Vector3 obstruction_vertex(projected_obstruction.vertices[i * 3 + 0], projected_obstruction.vertices[i * 3 + 1], projected_obstruction.vertices[i * 3 + 2]);
+			clip_path.emplace_back(obstruction_vertex.dot(p_basis_u), obstruction_vertex.dot(p_basis_v));
+		}
+		if (!IsPositive(clip_path)) {
+			std::reverse(clip_path.begin(), clip_path.end());
+		}
+		r_paths.push_back(std::move(clip_path));
+	}
+}
+#endif // CLIPPER2_ENABLED
+
+// Flat baking: generate the navigation mesh by 2D polygon clipping on a single
+// plane instead of voxelizing the source geometry with Recast. Source geometry
+// triangles that rise above the walkable band (agent_max_climb) are treated as
+// solid obstacle footprints, triangles within the band as walkable floor.
+static void generator_bake_flat_from_source_geometry_data(Ref<NavigationMesh> p_navigation_mesh, const Vector<float> &p_vertices, const Vector<int> &p_indices, const Vector<NavigationMeshSourceGeometryData3D::ProjectedObstruction> &p_projected_obstructions) {
+#ifndef CLIPPER2_ENABLED
+	ERR_FAIL_MSG("NavigationMesh flat baking requires the Clipper2 library which is not available in this build.");
+#else
+	using namespace Clipper2Lib;
+
+	const Plane plane = p_navigation_mesh->get_baking_flat_plane();
+	Vector3 plane_normal = plane.normal;
+	ERR_FAIL_COND_MSG(plane_normal.is_zero_approx(), "NavigationMesh flat baking plane has a zero-length normal.");
+	plane_normal.normalize();
+
+	// Build an orthonormal basis (u, v) spanning the baking plane. Note u.cross(v) == plane_normal,
+	// so a CCW winding in (u, v) coordinates yields a polygon facing along the plane normal.
+	const Vector3 basis_helper = Math::abs(plane_normal.x) < 0.9f ? Vector3(1, 0, 0) : Vector3(0, 1, 0);
+	const Vector3 basis_u = plane_normal.cross(basis_helper).normalized();
+	const Vector3 basis_v = plane_normal.cross(basis_u).normalized();
+	const Vector3 plane_origin = plane_normal * plane.d;
+
+	const float agent_radius = p_navigation_mesh->get_agent_radius();
+	// Geometry rising more than this above the plane is an obstacle (walls, obstacle tops);
+	// geometry within the band around the plane is walkable floor.
+	const float obstacle_threshold = MAX(p_navigation_mesh->get_agent_max_climb(), (float)CMP_EPSILON);
+	// Only triangles facing the plane within this slope count as walkable floor. This excludes
+	// obstacle undersides and near-vertical faces, and (together with forcing a consistent winding
+	// before the union below) keeps the floor from self-cancelling under the NonZero fill rule.
+	const float cos_max_slope = Math::cos(Math::deg_to_rad(p_navigation_mesh->get_agent_max_slope()));
+
+	const float *verts = p_vertices.ptr();
+	const int *tris = p_indices.ptr();
+	const int ntris = p_indices.size() / 3;
+
+	PathsD traversable_polygon_paths;
+	PathsD obstruction_polygon_paths;
+
+	for (int i = 0; i < ntris; i++) {
+		const int vi0 = tris[i * 3 + 0];
+		const int vi1 = tris[i * 3 + 1];
+		const int vi2 = tris[i * 3 + 2];
+		const Vector3 p0(verts[vi0 * 3 + 0], verts[vi0 * 3 + 1], verts[vi0 * 3 + 2]);
+		const Vector3 p1(verts[vi1 * 3 + 0], verts[vi1 * 3 + 1], verts[vi1 * 3 + 2]);
+		const Vector3 p2(verts[vi2 * 3 + 0], verts[vi2 * 3 + 1], verts[vi2 * 3 + 2]);
+
+		const float d0 = plane_normal.dot(p0) - plane.d;
+		const float d1 = plane_normal.dot(p1) - plane.d;
+		const float d2 = plane_normal.dot(p2) - plane.d;
+		const float tri_max = MAX(d0, MAX(d1, d2));
+		const float tri_min = MIN(d0, MIN(d1, d2));
+
+		PathD tri_path;
+		tri_path.reserve(3);
+		tri_path.emplace_back(p0.dot(basis_u), p0.dot(basis_v));
+		tri_path.emplace_back(p1.dot(basis_u), p1.dot(basis_v));
+		tri_path.emplace_back(p2.dot(basis_u), p2.dot(basis_v));
+
+		if (tri_max > obstacle_threshold) {
+			// Rises above the walkable band: carve as a solid obstacle footprint.
+			if (!IsPositive(tri_path)) {
+				std::reverse(tri_path.begin(), tri_path.end());
+			}
+			obstruction_polygon_paths.push_back(std::move(tri_path));
+			continue;
+		}
+
+		if (tri_min < -obstacle_threshold) {
+			// Below the walkable band, e.g. a lower floor level: not part of this plane's layer.
+			continue;
+		}
+
+		// Within the band around the plane. Only count triangles roughly parallel to the plane as
+		// floor so near-vertical faces don't pollute the traversable area. Use the absolute alignment
+		// so floor geometry is accepted regardless of its source winding (consistency is enforced
+		// below). Obstacle undersides also land here but get carved back out by their tops above.
+		Vector3 tri_normal = (p1 - p0).cross(p2 - p0);
+		const float tri_double_area = tri_normal.length();
+		if (tri_double_area <= (float)CMP_EPSILON) {
+			continue; // Degenerate or projects to a line.
+		}
+		tri_normal /= tri_double_area;
+		if (Math::abs(tri_normal.dot(plane_normal)) < cos_max_slope) {
+			continue; // Too steep relative to the plane.
+		}
+
+		// Force a consistent winding so coplanar floor triangles merge instead of cancelling.
+		if (!IsPositive(tri_path)) {
+			std::reverse(tri_path.begin(), tri_path.end());
+		}
+		traversable_polygon_paths.push_back(std::move(tri_path));
+	}
+
+	// Explicit projected obstructions (e.g. from NavigationObstacle3D) that are affected by agent radius.
+	_flat_collect_projected_obstructions(obstruction_polygon_paths, p_projected_obstructions, basis_u, basis_v, false);
+
+	// Optional baking bounds: project the AABB corners onto the plane and clip to their 2D extent.
+	const AABB baking_aabb = p_navigation_mesh->get_filter_baking_aabb();
+	if (baking_aabb.has_volume()) {
+		const Vector3 aabb_offset = p_navigation_mesh->get_filter_baking_aabb_offset();
+		const Vector3 aabb_position = baking_aabb.position + aabb_offset;
+		double min_x = 0.0, min_y = 0.0, max_x = 0.0, max_y = 0.0;
+		for (int corner = 0; corner < 8; corner++) {
+			const Vector3 world_corner = aabb_position + Vector3(
+														 (corner & 1) ? baking_aabb.size.x : 0.0f,
+														 (corner & 2) ? baking_aabb.size.y : 0.0f,
+														 (corner & 4) ? baking_aabb.size.z : 0.0f);
+			const double cx = world_corner.dot(basis_u);
+			const double cy = world_corner.dot(basis_v);
+			if (corner == 0) {
+				min_x = max_x = cx;
+				min_y = max_y = cy;
+			} else {
+				min_x = MIN(min_x, cx);
+				max_x = MAX(max_x, cx);
+				min_y = MIN(min_y, cy);
+				max_y = MAX(max_y, cy);
+			}
+		}
+		const RectD clipper_rect = RectD(min_x, min_y, max_x, max_y);
+		traversable_polygon_paths = RectClip(clipper_rect, traversable_polygon_paths);
+		obstruction_polygon_paths = RectClip(clipper_rect, obstruction_polygon_paths);
+	}
+
+	if (traversable_polygon_paths.empty()) {
+		p_navigation_mesh->clear();
+		WARN_PRINT("NavigationMesh flat baking found no walkable floor near the baking plane. Check that 'baking_flat_plane' matches the floor height and orientation, and that 'agent_max_slope' / 'agent_max_climb' are not too restrictive.");
+		return;
+	}
+
+	const PathsD dummy_clip_path;
+	// Merge floor polygons into solid traversable areas.
+	traversable_polygon_paths = Union(traversable_polygon_paths, dummy_clip_path, FillRule::NonZero);
+	// Merge obstacle footprints into solid areas (no interior holes), giving them a true "inside".
+	obstruction_polygon_paths = Union(obstruction_polygon_paths, dummy_clip_path, FillRule::NonZero);
+
+	PathsD path_solution = Difference(traversable_polygon_paths, obstruction_polygon_paths, FillRule::NonZero);
+
+	if (agent_radius > 0.0) {
+		path_solution = InflatePaths(path_solution, -agent_radius, JoinType::Miter, EndType::Polygon);
+	}
+
+	// Carve obstructions that are not affected by agent radius, applied after erosion.
+	PathsD carve_obstruction_paths;
+	_flat_collect_projected_obstructions(carve_obstruction_paths, p_projected_obstructions, basis_u, basis_v, true);
+	if (!carve_obstruction_paths.empty()) {
+		carve_obstruction_paths = Union(carve_obstruction_paths, dummy_clip_path, FillRule::NonZero);
+		path_solution = Difference(path_solution, carve_obstruction_paths, FillRule::NonZero);
+	}
+
+	if (path_solution.empty()) {
+		p_navigation_mesh->clear();
+		return;
+	}
+
+	List<TPPLPoly> tppl_in_polygon, tppl_out_polygon;
+	PolyTreeD polytree;
+	ClipperD clipper_D;
+	clipper_D.AddSubject(path_solution);
+	clipper_D.Execute(ClipType::Union, FillRule::NonZero, polytree);
+
+	for (size_t i = 0; i < polytree.Count(); i++) {
+		generator_recursive_process_polytree_items(tppl_in_polygon, polytree[i]);
+	}
+
+	// Triangulate (not convex-partition): Godot's 3D navigation mesh, its debug rendering, and the
+	// Recast path all use triangle polygons. Emitting convex polygons with more than 3 vertices makes
+	// the debug mesh (which only draws each polygon's first 3 vertices) render incorrectly.
+	TPPLPartition tpart;
+	if (tpart.Triangulate_EC(&tppl_in_polygon, &tppl_out_polygon) == 0) {
+		p_navigation_mesh->clear();
+		ERR_FAIL_MSG("NavigationMesh flat triangulation failed. Unable to create a valid navigation mesh polygon layout from the provided source geometry.");
+	}
+
+	Vector<Vector3> nav_vertices;
+	Vector<Vector<int>> nav_polygons;
+	HashMap<Vector3, int> point_to_index;
+
+	for (const TPPLPoly &tp : tppl_out_polygon) {
+		const int point_count = tp.GetNumPoints();
+		Vector<int> nav_polygon;
+		nav_polygon.resize(point_count);
+		for (int64_t i = 0; i < point_count; i++) {
+			const Vector2 &point = tp[i];
+			const Vector3 world_vertex = plane_origin + basis_u * (real_t)point.x + basis_v * (real_t)point.y;
+			HashMap<Vector3, int>::Iterator E = point_to_index.find(world_vertex);
+			if (!E) {
+				E = point_to_index.insert(world_vertex, nav_vertices.size());
+				nav_vertices.push_back(world_vertex);
+			}
+			// Reverse the winding: the partition yields CCW-from-above polygons, but Godot's
+			// navigation mesh expects the opposite winding so the polygons face up (correct
+			// surface normal for the navigation map and the debug rendering, which is backface culled).
+			nav_polygon.write[point_count - 1 - i] = E->value;
+		}
+		nav_polygons.push_back(nav_polygon);
+	}
+
+	p_navigation_mesh->set_data(nav_vertices, nav_polygons);
+#endif // CLIPPER2_ENABLED
+}
+
 void NavMeshGenerator3D::generator_bake_from_source_geometry_data(NavMeshGeneratorTask3D *p_generator_task) {
 	Ref<NavigationMesh> p_navigation_mesh = p_generator_task->navigation_mesh;
 	const Ref<NavigationMeshSourceGeometryData3D> &p_source_geometry_data = p_generator_task->source_geometry_data;
@@ -320,6 +580,12 @@ void NavMeshGenerator3D::generator_bake_from_source_geometry_data(NavMeshGenerat
 			projected_obstructions);
 
 	if (source_geometry_vertices.size() < 3 || source_geometry_indices.size() < 3) {
+		return;
+	}
+
+	if (p_navigation_mesh->get_baking_flat_enabled()) {
+		generator_bake_flat_from_source_geometry_data(p_navigation_mesh, source_geometry_vertices, source_geometry_indices, projected_obstructions);
+		p_generator_task->bake_state = NavMeshBakeState::BAKE_STATE_BAKE_FINISHED;
 		return;
 	}
 

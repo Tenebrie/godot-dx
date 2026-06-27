@@ -305,6 +305,23 @@ Vector3 NavigationMesh::get_filter_baking_aabb_offset() const {
 	return filter_baking_aabb_offset;
 }
 
+void NavigationMesh::set_baking_flat_enabled(bool p_enabled) {
+	baking_flat_enabled = p_enabled;
+	notify_property_list_changed();
+}
+
+bool NavigationMesh::get_baking_flat_enabled() const {
+	return baking_flat_enabled;
+}
+
+void NavigationMesh::set_baking_flat_plane(const Plane &p_plane) {
+	baking_flat_plane = p_plane;
+}
+
+Plane NavigationMesh::get_baking_flat_plane() const {
+	return baking_flat_plane;
+}
+
 void NavigationMesh::set_vertices(const Vector<Vector3> &p_vertices) {
 	RWLockWrite write_lock(rwlock);
 	vertices = p_vertices;
@@ -556,6 +573,11 @@ void NavigationMesh::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_filter_baking_aabb_offset", "baking_aabb_offset"), &NavigationMesh::set_filter_baking_aabb_offset);
 	ClassDB::bind_method(D_METHOD("get_filter_baking_aabb_offset"), &NavigationMesh::get_filter_baking_aabb_offset);
 
+	ClassDB::bind_method(D_METHOD("set_baking_flat_enabled", "enabled"), &NavigationMesh::set_baking_flat_enabled);
+	ClassDB::bind_method(D_METHOD("get_baking_flat_enabled"), &NavigationMesh::get_baking_flat_enabled);
+	ClassDB::bind_method(D_METHOD("set_baking_flat_plane", "plane"), &NavigationMesh::set_baking_flat_plane);
+	ClassDB::bind_method(D_METHOD("get_baking_flat_plane"), &NavigationMesh::get_baking_flat_plane);
+
 	ClassDB::bind_method(D_METHOD("set_vertices", "vertices"), &NavigationMesh::set_vertices);
 	ClassDB::bind_method(D_METHOD("get_vertices"), &NavigationMesh::get_vertices);
 
@@ -609,6 +631,9 @@ void NavigationMesh::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "filter_walkable_low_height_spans"), "set_filter_walkable_low_height_spans", "get_filter_walkable_low_height_spans");
 	ADD_PROPERTY(PropertyInfo(Variant::AABB, "filter_baking_aabb"), "set_filter_baking_aabb", "get_filter_baking_aabb");
 	ADD_PROPERTY(PropertyInfo(Variant::VECTOR3, "filter_baking_aabb_offset"), "set_filter_baking_aabb_offset", "get_filter_baking_aabb_offset");
+	ADD_GROUP("Flat Baking", "baking_flat_");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "baking_flat_enabled"), "set_baking_flat_enabled", "get_baking_flat_enabled");
+	ADD_PROPERTY(PropertyInfo(Variant::PLANE, "baking_flat_plane"), "set_baking_flat_plane", "get_baking_flat_plane");
 
 	BIND_ENUM_CONSTANT(SAMPLE_PARTITION_WATERSHED);
 	BIND_ENUM_CONSTANT(SAMPLE_PARTITION_MONOTONE);
@@ -634,6 +659,11 @@ void NavigationMesh::_validate_property(PropertyInfo &p_property) const {
 		}
 	} else if (p_property.name == "geometry_source_group_name") {
 		if (source_geometry_mode == SOURCE_GEOMETRY_ROOT_NODE_CHILDREN) {
+			p_property.usage = PROPERTY_USAGE_NONE;
+			return;
+		}
+	} else if (p_property.name == "baking_flat_plane") {
+		if (!baking_flat_enabled) {
 			p_property.usage = PROPERTY_USAGE_NONE;
 			return;
 		}
