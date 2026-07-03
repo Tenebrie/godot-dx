@@ -1362,6 +1362,10 @@ private:
 	Node *list = nullptr;
 	List<ParserError> errors;
 
+	// Type inference settings apply in both dev and release builds — the analyzer/parser
+	// reference `infer_type_from_assignment` outside of any DEBUG_ENABLED gate.
+	static bool infer_type_from_assignment;
+
 #ifdef DEBUG_ENABLED
 public:
 	struct WarningDirectoryRule {
@@ -1387,7 +1391,6 @@ private:
 	};
 
 	static bool is_project_ignoring_warnings;
-	static bool infer_type_from_assignment;
 	static GDScriptWarning::WarnLevel warning_levels[GDScriptWarning::WARNING_MAX];
 	static LocalVector<WarningDirectoryRule> warning_directory_rules;
 
@@ -1662,8 +1665,9 @@ public:
 		return List<String>();
 	}
 
-#ifdef DEBUG_ENABLED
 	static void update_project_settings();
+
+#ifdef DEBUG_ENABLED
 	const List<GDScriptWarning> &get_warnings() const { return warnings; }
 	const HashSet<int> &get_unsafe_lines() const { return unsafe_lines; }
 	int get_last_line_number() const { return current.end_line; }

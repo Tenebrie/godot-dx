@@ -2189,12 +2189,10 @@ void GDScriptLanguage::init() {
 	}
 #endif // TOOLS_ENABLED
 
-#ifdef DEBUG_ENABLED
 	GDScriptParser::update_project_settings();
 	if (!ProjectSettings::get_singleton()->is_connected("settings_changed", callable_mp_static(&GDScriptParser::update_project_settings))) {
 		ProjectSettings::get_singleton()->connect("settings_changed", callable_mp_static(&GDScriptParser::update_project_settings));
 	}
-#endif // DEBUG_ENABLED
 
 #ifdef TESTS_ENABLED
 	GDScriptTests::GDScriptTestRunner::handle_cmdline();
@@ -2877,13 +2875,15 @@ GDScriptLanguage::GDScriptLanguage() {
 	track_call_stack = GLOBAL_DEF_RST("debug/settings/gdscript/always_track_call_stacks", false);
 	track_locals = GLOBAL_DEF_RST("debug/settings/gdscript/always_track_local_variables", false);
 
+	// Type inference setting must be registered in both dev and release builds so
+	// `update_project_settings()` can read it in either build.
+	GLOBAL_DEF("debug/gdscript/type_inference/infer_type_from_assignment", false);
+
 #ifdef DEBUG_ENABLED
 	track_call_stack = true;
 	track_locals = track_locals || EngineDebugger::is_active();
 
 	GLOBAL_DEF("debug/gdscript/warnings/enable", true);
-
-	GLOBAL_DEF("debug/gdscript/type_inference/infer_type_from_assignment", false);
 
 	GLOBAL_DEF(PropertyInfo(Variant::DICTIONARY,
 					   "debug/gdscript/warnings/directory_rules",

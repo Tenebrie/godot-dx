@@ -65,9 +65,10 @@ Variant::Type GDScriptParser::get_builtin_type(const StringName &p_type) {
 	return Variant::VARIANT_MAX;
 }
 
+bool GDScriptParser::infer_type_from_assignment = false;
+
 #ifdef DEBUG_ENABLED
 bool GDScriptParser::is_project_ignoring_warnings = false;
-bool GDScriptParser::infer_type_from_assignment = false;
 GDScriptWarning::WarnLevel GDScriptParser::warning_levels[GDScriptWarning::WARNING_MAX];
 LocalVector<GDScriptParser::WarningDirectoryRule> GDScriptParser::warning_directory_rules;
 #endif // DEBUG_ENABLED
@@ -93,10 +94,12 @@ bool GDScriptParser::annotation_exists(const String &p_annotation_name) const {
 	return valid_annotations.has(p_annotation_name);
 }
 
-#ifdef DEBUG_ENABLED
 void GDScriptParser::update_project_settings() {
-	is_project_ignoring_warnings = !GLOBAL_GET("debug/gdscript/warnings/enable").booleanize();
+	// Type inference setting is honored in both dev and release builds.
 	infer_type_from_assignment = GLOBAL_GET("debug/gdscript/type_inference/infer_type_from_assignment").booleanize();
+
+#ifdef DEBUG_ENABLED
+	is_project_ignoring_warnings = !GLOBAL_GET("debug/gdscript/warnings/enable").booleanize();
 
 	for (int i = 0; i < GDScriptWarning::WARNING_MAX; i++) {
 		const String setting_path = GDScriptWarning::get_setting_path_from_code((GDScriptWarning::Code)i);
@@ -138,8 +141,8 @@ void GDScriptParser::update_project_settings() {
 	};
 
 	warning_directory_rules.sort_custom<RuleSort>();
-}
 #endif // DEBUG_ENABLED
+}
 
 GDScriptParser::GDScriptParser() {
 	// Register valid annotations.
