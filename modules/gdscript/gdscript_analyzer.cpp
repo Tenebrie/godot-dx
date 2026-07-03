@@ -3740,14 +3740,47 @@ void GDScriptAnalyzer::reduce_call(GDScriptParser::CallNode *p_call, bool p_is_a
 			}
 		}
 
+		// Helper: locate the ClassNode that owns the signal we're about to call `emit`/`connect` on.
+		// The call's callee is a subscript `<signal_expr>.emit`; the signal itself is `<signal_expr>`.
+		// - If <signal_expr> is a bare identifier, it resolves against the current class hierarchy.
+		// - If <signal_expr> is a subscript `<obj>.SignalName`, the owner is the type of <obj>.
+		// Returns nullptr if the owner class can't be resolved statically.
+		auto get_signal_owner_class = [&]() -> const GDScriptParser::ClassNode * {
+			if (p_call->callee == nullptr || p_call->callee->type != GDScriptParser::Node::SUBSCRIPT) {
+				return nullptr;
+			}
+			GDScriptParser::SubscriptNode *outer = static_cast<GDScriptParser::SubscriptNode *>(p_call->callee);
+			if (outer->base == nullptr) {
+				return nullptr;
+			}
+			if (outer->base->type == GDScriptParser::Node::IDENTIFIER) {
+				// Bare-identifier signal: implicit self lookup.
+				return parser->current_class;
+			}
+			if (outer->base->type == GDScriptParser::Node::SUBSCRIPT) {
+				GDScriptParser::SubscriptNode *inner = static_cast<GDScriptParser::SubscriptNode *>(outer->base);
+				if (inner->base == nullptr) {
+					return nullptr;
+				}
+				const GDScriptParser::DataType &owner_type = inner->base->get_datatype();
+				if ((owner_type.kind == GDScriptParser::DataType::CLASS || owner_type.kind == GDScriptParser::DataType::SCRIPT) && owner_type.class_type != nullptr) {
+					return owner_type.class_type;
+				}
+			}
+			return nullptr;
+		};
+
 		// Helper: get the signal's parameter DataTypes directly from the signal declaration
 		// (avoids lossy round-trip through PropertyInfo for CLASS types).
-		auto get_signal_param_types = [&](const GDScriptParser::DataType &p_signal_type) -> Vector<GDScriptParser::DataType> {
+		auto get_signal_param_types = [&](const GDScriptParser::DataType &p_signal_type, const GDScriptParser::ClassNode *p_owner_class) -> Vector<GDScriptParser::DataType> {
 			Vector<GDScriptParser::DataType> result;
 			const MethodInfo &signal_mi = p_signal_type.method_info;
 
-			// Try to find the signal node in the current class hierarchy for accurate types.
-			const GDScriptParser::ClassNode *check_class = parser->current_class;
+			// Try to find the signal node in the owning class hierarchy for accurate types.
+			// Starting from the SIGNAL'S OWNER (not parser->current_class) avoids picking up
+			// a same-named signal declared in the current script when the emit is actually
+			// on some other object's signal.
+			const GDScriptParser::ClassNode *check_class = p_owner_class;
 			while (check_class != nullptr) {
 				if (check_class->has_member(signal_mi.name)) {
 					const GDScriptParser::ClassNode::Member &member = check_class->get_member(signal_mi.name);
@@ -3784,7 +3817,7 @@ void GDScriptAnalyzer::reduce_call(GDScriptParser::CallNode *p_call, bool p_is_a
 		// Infer lambda parameter types from Signal.connect() using the signal's declared parameters.
 		if (base_type.kind == GDScriptParser::DataType::BUILTIN && base_type.builtin_type == Variant::SIGNAL &&
 				p_call->function_name == SNAME("connect")) {
-			Vector<GDScriptParser::DataType> signal_params = get_signal_param_types(base_type);
+			Vector<GDScriptParser::DataType> signal_params = get_signal_param_types(base_type, get_signal_owner_class());
 			if (signal_params.size() > 0 && p_call->arguments.size() > 0) {
 				GDScriptParser::ExpressionNode *arg = p_call->arguments[0];
 				if (arg->type == GDScriptParser::Node::LAMBDA) {
@@ -3808,7 +3841,7 @@ void GDScriptAnalyzer::reduce_call(GDScriptParser::CallNode *p_call, bool p_is_a
 		bool is_signal_emit_vararg = method_flags.has_flag(METHOD_FLAG_VARARG);
 		if (base_type.kind == GDScriptParser::DataType::BUILTIN && base_type.builtin_type == Variant::SIGNAL &&
 				p_call->function_name == SNAME("emit")) {
-			Vector<GDScriptParser::DataType> signal_params = get_signal_param_types(base_type);
+			Vector<GDScriptParser::DataType> signal_params = get_signal_param_types(base_type, get_signal_owner_class());
 			if (signal_params.size() > 0) {
 				par_types.clear();
 				for (int i = 0; i < signal_params.size(); i++) {
