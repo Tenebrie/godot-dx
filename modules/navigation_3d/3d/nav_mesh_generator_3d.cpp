@@ -42,6 +42,7 @@
 #ifdef CLIPPER2_ENABLED
 #include <thirdparty/clipper2/include/clipper2/clipper.h>
 #include <thirdparty/misc/polypartition.h>
+#include <poly2tri/poly2tri.h>
 #endif // CLIPPER2_ENABLED
 
 NavMeshGenerator3D *NavMeshGenerator3D::singleton = nullptr;
@@ -308,31 +309,144 @@ void NavMeshGenerator3D::generator_parse_source_geometry_data(const Ref<Navigati
 }
 
 #ifdef CLIPPER2_ENABLED
-static void generator_recursive_process_polytree_items(List<TPPLPoly> &p_tppl_in_polygon, const Clipper2Lib::PolyPathD *p_polypath_item) {
+// Triangulate a single "outer" polytree node (an island of walkable area) with its immediate hole
+// children using poly2tri's constrained Delaunay triangulation. Recurses into island-in-hole nesting.
+static void generator_flat_triangulate_outer(
+		const Clipper2Lib::PolyPathD *p_outer_node,
+		Vector<Vector3> &r_nav_vertices,
+		Vector<Vector<int>> &r_nav_polygons,
+		HashMap<Vector3, int> &r_point_to_index,
+		const Vector3 &p_plane_origin,
+		const Vector3 &p_basis_u,
+		const Vector3 &p_basis_v) {
+	using namespace Clipper2Lib;
+
+	// Own all p2t::Point allocations so poly2tri can hold raw pointers into them.
+	std::vector<p2t::Point *> owned_points;
+
+	auto build_ring = [&owned_points](const PolyPathD *p_ring_node, std::vector<p2t::Point *> &r_out) {
+		r_out.reserve(p_ring_node->Polygon().size());
+		for (const PointD &polypath_point : p_ring_node->Polygon()) {
+			p2t::Point *p = new p2t::Point(polypath_point.x, polypath_point.y);
+			owned_points.push_back(p);
+			r_out.push_back(p);
+		}
+	};
+
+	std::vector<p2t::Point *> outer;
+	build_ring(p_outer_node, outer);
+
+	// A ring with fewer than 3 vertices cannot be triangulated; skip but still recurse into any islands.
+	if (outer.size() >= 3) {
+		p2t::CDT cdt(outer);
+
+		for (size_t i = 0; i < p_outer_node->Count(); i++) {
+			const PolyPathD *hole_node = p_outer_node->Child(i);
+			std::vector<p2t::Point *> hole;
+			build_ring(hole_node, hole);
+			if (hole.size() >= 3) {
+				cdt.AddHole(hole);
+			}
+		}
+
+		cdt.Triangulate();
+		const std::vector<p2t::Triangle *> triangles = cdt.GetTriangles();
+		for (p2t::Triangle *tri : triangles) {
+			Vector<int> nav_polygon;
+			nav_polygon.resize(3);
+			for (int i = 0; i < 3; i++) {
+				const p2t::Point *pt = tri->GetPoint(i);
+				const Vector3 world_vertex = p_plane_origin + p_basis_u * (real_t)pt->x + p_basis_v * (real_t)pt->y;
+				HashMap<Vector3, int>::Iterator E = r_point_to_index.find(world_vertex);
+				if (!E) {
+					E = r_point_to_index.insert(world_vertex, r_nav_vertices.size());
+					r_nav_vertices.push_back(world_vertex);
+				}
+				// Reverse the winding: poly2tri emits CCW-in-(u,v) triangles, but Godot's navigation
+				// mesh expects the opposite winding so the polygons face along the plane normal
+				// (correct surface normal for the navigation map and backface-culled debug render).
+				nav_polygon.write[2 - i] = E->value;
+			}
+			r_nav_polygons.push_back(nav_polygon);
+		}
+	}
+
+	for (p2t::Point *p : owned_points) {
+		delete p;
+	}
+
+	// Islands-in-holes: each direct hole child may contain further outer polygons that need their own CDT.
+	for (size_t i = 0; i < p_outer_node->Count(); i++) {
+		const PolyPathD *hole_node = p_outer_node->Child(i);
+		for (size_t j = 0; j < hole_node->Count(); j++) {
+			generator_flat_triangulate_outer(
+					hole_node->Child(j),
+					r_nav_vertices, r_nav_polygons, r_point_to_index,
+					p_plane_origin, p_basis_u, p_basis_v);
+		}
+	}
+}
+
+// Flatten a polytree into polypartition's List<TPPLPoly> representation (holes marked with the
+// SetHole flag), then ear-clip. Kept as a legacy option: it's the fastest triangulator available
+// but produces sliver triangles that destabilize corridor A*.
+static void generator_flat_flatten_polytree_tppl(List<TPPLPoly> &r_polys, const Clipper2Lib::PolyPathD *p_node) {
 	using namespace Clipper2Lib;
 
 	TPPLPoly tp;
-	int size = p_polypath_item->Polygon().size();
+	int size = p_node->Polygon().size();
 	tp.Init(size);
-
 	int j = 0;
-	for (const PointD &polypath_point : p_polypath_item->Polygon()) {
+	for (const PointD &polypath_point : p_node->Polygon()) {
 		tp[j] = Vector2(static_cast<real_t>(polypath_point.x), static_cast<real_t>(polypath_point.y));
 		++j;
 	}
-
-	if (p_polypath_item->IsHole()) {
+	if (p_node->IsHole()) {
 		tp.SetOrientation(TPPL_ORIENTATION_CW);
 		tp.SetHole(true);
 	} else {
 		tp.SetOrientation(TPPL_ORIENTATION_CCW);
 	}
-	p_tppl_in_polygon.push_back(tp);
+	r_polys.push_back(tp);
 
-	for (size_t i = 0; i < p_polypath_item->Count(); i++) {
-		const PolyPathD *polypath_item = p_polypath_item->Child(i);
-		generator_recursive_process_polytree_items(p_tppl_in_polygon, polypath_item);
+	for (size_t i = 0; i < p_node->Count(); i++) {
+		generator_flat_flatten_polytree_tppl(r_polys, p_node->Child(i));
 	}
+}
+
+static bool generator_flat_triangulate_polypartition(
+		const Clipper2Lib::PolyTreeD &p_polytree,
+		Vector<Vector3> &r_nav_vertices,
+		Vector<Vector<int>> &r_nav_polygons,
+		HashMap<Vector3, int> &r_point_to_index,
+		const Vector3 &p_plane_origin,
+		const Vector3 &p_basis_u,
+		const Vector3 &p_basis_v) {
+	List<TPPLPoly> tppl_in_polygon, tppl_out_polygon;
+	for (size_t i = 0; i < p_polytree.Count(); i++) {
+		generator_flat_flatten_polytree_tppl(tppl_in_polygon, p_polytree[i]);
+	}
+	TPPLPartition tpart;
+	if (tpart.Triangulate_EC(&tppl_in_polygon, &tppl_out_polygon) == 0) {
+		return false;
+	}
+	for (const TPPLPoly &tp : tppl_out_polygon) {
+		const int point_count = tp.GetNumPoints();
+		Vector<int> nav_polygon;
+		nav_polygon.resize(point_count);
+		for (int64_t i = 0; i < point_count; i++) {
+			const Vector2 &point = tp[i];
+			const Vector3 world_vertex = p_plane_origin + p_basis_u * (real_t)point.x + p_basis_v * (real_t)point.y;
+			HashMap<Vector3, int>::Iterator E = r_point_to_index.find(world_vertex);
+			if (!E) {
+				E = r_point_to_index.insert(world_vertex, r_nav_vertices.size());
+				r_nav_vertices.push_back(world_vertex);
+			}
+			nav_polygon.write[point_count - 1 - i] = E->value;
+		}
+		r_nav_polygons.push_back(nav_polygon);
+	}
+	return true;
 }
 
 // Builds a Clipper2 path set from projected obstructions, optionally filtered by carve flag.
@@ -515,47 +629,34 @@ static void generator_bake_flat_from_source_geometry_data(Ref<NavigationMesh> p_
 		return;
 	}
 
-	List<TPPLPoly> tppl_in_polygon, tppl_out_polygon;
+	// Build a proper polytree from the clipped path so outer polygons and their holes are nested
+	// (rather than being a flat list of paths) — this is required by poly2tri (one CDT call per
+	// outer, holes added via AddHole()) and equally useful as input to polypartition.
 	PolyTreeD polytree;
 	ClipperD clipper_D;
 	clipper_D.AddSubject(path_solution);
 	clipper_D.Execute(ClipType::Union, FillRule::NonZero, polytree);
 
-	for (size_t i = 0; i < polytree.Count(); i++) {
-		generator_recursive_process_polytree_items(tppl_in_polygon, polytree[i]);
-	}
-
-	// Triangulate (not convex-partition): Godot's 3D navigation mesh, its debug rendering, and the
-	// Recast path all use triangle polygons. Emitting convex polygons with more than 3 vertices makes
-	// the debug mesh (which only draws each polygon's first 3 vertices) render incorrectly.
-	TPPLPartition tpart;
-	if (tpart.Triangulate_EC(&tppl_in_polygon, &tppl_out_polygon) == 0) {
-		p_navigation_mesh->clear();
-		ERR_FAIL_MSG("NavigationMesh flat triangulation failed. Unable to create a valid navigation mesh polygon layout from the provided source geometry.");
-	}
-
 	Vector<Vector3> nav_vertices;
 	Vector<Vector<int>> nav_polygons;
 	HashMap<Vector3, int> point_to_index;
 
-	for (const TPPLPoly &tp : tppl_out_polygon) {
-		const int point_count = tp.GetNumPoints();
-		Vector<int> nav_polygon;
-		nav_polygon.resize(point_count);
-		for (int64_t i = 0; i < point_count; i++) {
-			const Vector2 &point = tp[i];
-			const Vector3 world_vertex = plane_origin + basis_u * (real_t)point.x + basis_v * (real_t)point.y;
-			HashMap<Vector3, int>::Iterator E = point_to_index.find(world_vertex);
-			if (!E) {
-				E = point_to_index.insert(world_vertex, nav_vertices.size());
-				nav_vertices.push_back(world_vertex);
+	// Branch on the user's chosen triangulation algorithm. Everything above (boolean clipping,
+	// obstacle carving, erosion) is shared; only the final triangulation step differs.
+	// See NavigationMesh::FlatTriangulationAlgorithm for the semantic tradeoffs.
+	switch (p_navigation_mesh->get_baking_flat_triangulation_algorithm()) {
+		case NavigationMesh::FLAT_TRIANGULATION_EAR_CLIPPING: {
+			if (!generator_flat_triangulate_polypartition(polytree, nav_vertices, nav_polygons, point_to_index, plane_origin, basis_u, basis_v)) {
+				p_navigation_mesh->clear();
+				ERR_FAIL_MSG("NavigationMesh flat triangulation failed. Unable to create a valid navigation mesh polygon layout from the provided source geometry.");
 			}
-			// Reverse the winding: the partition yields CCW-from-above polygons, but Godot's
-			// navigation mesh expects the opposite winding so the polygons face up (correct
-			// surface normal for the navigation map and the debug rendering, which is backface culled).
-			nav_polygon.write[point_count - 1 - i] = E->value;
-		}
-		nav_polygons.push_back(nav_polygon);
+		} break;
+		case NavigationMesh::FLAT_TRIANGULATION_CDT:
+		default: {
+			for (size_t i = 0; i < polytree.Count(); i++) {
+				generator_flat_triangulate_outer(polytree[i], nav_vertices, nav_polygons, point_to_index, plane_origin, basis_u, basis_v);
+			}
+		} break;
 	}
 
 	p_navigation_mesh->set_data(nav_vertices, nav_polygons);

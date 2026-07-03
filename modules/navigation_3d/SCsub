@@ -70,6 +70,23 @@ if env["builtin_rvo2_3d"]:
     env_thirdparty.disable_warnings()
     env_thirdparty.add_source_files(thirdparty_obj, thirdparty_sources)
 
+# poly2tri Thirdparty source files (constrained Delaunay triangulation used by flat navmesh baking).
+thirdparty_poly2tri_dir = "#thirdparty/poly2tri/"
+thirdparty_poly2tri_sources = [
+    "poly2tri/common/shapes.cc",
+    "poly2tri/sweep/advancing_front.cc",
+    "poly2tri/sweep/cdt.cc",
+    "poly2tri/sweep/sweep.cc",
+    "poly2tri/sweep/sweep_context.cc",
+]
+thirdparty_poly2tri_sources = [thirdparty_poly2tri_dir + file for file in thirdparty_poly2tri_sources]
+
+env_navigation_3d.Prepend(CPPPATH=[thirdparty_poly2tri_dir])
+
+env_thirdparty = env_navigation_3d.Clone()
+env_thirdparty.disable_warnings()
+env_thirdparty.add_source_files(thirdparty_obj, thirdparty_poly2tri_sources)
+
 
 env.modules_sources += thirdparty_obj
 

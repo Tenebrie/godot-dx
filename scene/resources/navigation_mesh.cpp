@@ -322,6 +322,15 @@ Plane NavigationMesh::get_baking_flat_plane() const {
 	return baking_flat_plane;
 }
 
+void NavigationMesh::set_baking_flat_triangulation_algorithm(FlatTriangulationAlgorithm p_algorithm) {
+	ERR_FAIL_INDEX(p_algorithm, FLAT_TRIANGULATION_MAX);
+	baking_flat_triangulation_algorithm = p_algorithm;
+}
+
+NavigationMesh::FlatTriangulationAlgorithm NavigationMesh::get_baking_flat_triangulation_algorithm() const {
+	return baking_flat_triangulation_algorithm;
+}
+
 void NavigationMesh::set_vertices(const Vector<Vector3> &p_vertices) {
 	RWLockWrite write_lock(rwlock);
 	vertices = p_vertices;
@@ -577,6 +586,8 @@ void NavigationMesh::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_baking_flat_enabled"), &NavigationMesh::get_baking_flat_enabled);
 	ClassDB::bind_method(D_METHOD("set_baking_flat_plane", "plane"), &NavigationMesh::set_baking_flat_plane);
 	ClassDB::bind_method(D_METHOD("get_baking_flat_plane"), &NavigationMesh::get_baking_flat_plane);
+	ClassDB::bind_method(D_METHOD("set_baking_flat_triangulation_algorithm", "algorithm"), &NavigationMesh::set_baking_flat_triangulation_algorithm);
+	ClassDB::bind_method(D_METHOD("get_baking_flat_triangulation_algorithm"), &NavigationMesh::get_baking_flat_triangulation_algorithm);
 
 	ClassDB::bind_method(D_METHOD("set_vertices", "vertices"), &NavigationMesh::set_vertices);
 	ClassDB::bind_method(D_METHOD("get_vertices"), &NavigationMesh::get_vertices);
@@ -634,6 +645,7 @@ void NavigationMesh::_bind_methods() {
 	ADD_GROUP("Flat Baking", "baking_flat_");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "baking_flat_enabled"), "set_baking_flat_enabled", "get_baking_flat_enabled");
 	ADD_PROPERTY(PropertyInfo(Variant::PLANE, "baking_flat_plane"), "set_baking_flat_plane", "get_baking_flat_plane");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "baking_flat_triangulation_algorithm", PROPERTY_HINT_ENUM, "Ear Clipping (fastest),Constrained Delaunay"), "set_baking_flat_triangulation_algorithm", "get_baking_flat_triangulation_algorithm");
 
 	BIND_ENUM_CONSTANT(SAMPLE_PARTITION_WATERSHED);
 	BIND_ENUM_CONSTANT(SAMPLE_PARTITION_MONOTONE);
@@ -649,6 +661,10 @@ void NavigationMesh::_bind_methods() {
 	BIND_ENUM_CONSTANT(SOURCE_GEOMETRY_GROUPS_WITH_CHILDREN);
 	BIND_ENUM_CONSTANT(SOURCE_GEOMETRY_GROUPS_EXPLICIT);
 	BIND_ENUM_CONSTANT(SOURCE_GEOMETRY_MAX);
+
+	BIND_ENUM_CONSTANT(FLAT_TRIANGULATION_EAR_CLIPPING);
+	BIND_ENUM_CONSTANT(FLAT_TRIANGULATION_CDT);
+	BIND_ENUM_CONSTANT(FLAT_TRIANGULATION_MAX);
 }
 
 void NavigationMesh::_validate_property(PropertyInfo &p_property) const {
@@ -662,7 +678,7 @@ void NavigationMesh::_validate_property(PropertyInfo &p_property) const {
 			p_property.usage = PROPERTY_USAGE_NONE;
 			return;
 		}
-	} else if (p_property.name == "baking_flat_plane") {
+	} else if (p_property.name == "baking_flat_plane" || p_property.name == "baking_flat_triangulation_algorithm") {
 		if (!baking_flat_enabled) {
 			p_property.usage = PROPERTY_USAGE_NONE;
 			return;

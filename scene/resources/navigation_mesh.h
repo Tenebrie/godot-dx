@@ -77,6 +77,15 @@ public:
 		SOURCE_GEOMETRY_MAX
 	};
 
+	// Triangulation algorithm selection for the flat-baking pipeline. Only consulted when
+	// baking_flat_enabled is true. Ear-clipping is the fastest but produces sliver triangles that
+	// destabilize corridor A*; CDT (constrained Delaunay) avoids slivers for a given vertex set.
+	enum FlatTriangulationAlgorithm {
+		FLAT_TRIANGULATION_EAR_CLIPPING = 0,
+		FLAT_TRIANGULATION_CDT,
+		FLAT_TRIANGULATION_MAX
+	};
+
 protected:
 	float cell_size = NavigationDefaults3D::NAV_MESH_CELL_SIZE;
 	float cell_height = NavigationDefaults3D::NAV_MESH_CELL_HEIGHT;
@@ -112,6 +121,7 @@ protected:
 	// walkable layer.
 	bool baking_flat_enabled = false;
 	Plane baking_flat_plane = Plane(0.0, 1.0, 0.0, 0.0);
+	FlatTriangulationAlgorithm baking_flat_triangulation_algorithm = FLAT_TRIANGULATION_CDT;
 
 public:
 	// Recast settings
@@ -196,6 +206,9 @@ public:
 	void set_baking_flat_plane(const Plane &p_plane);
 	Plane get_baking_flat_plane() const;
 
+	void set_baking_flat_triangulation_algorithm(FlatTriangulationAlgorithm p_algorithm);
+	FlatTriangulationAlgorithm get_baking_flat_triangulation_algorithm() const;
+
 	void create_from_mesh(const Ref<Mesh> &p_mesh);
 
 	void set_vertices(const Vector<Vector3> &p_vertices);
@@ -221,3 +234,4 @@ public:
 VARIANT_ENUM_CAST(NavigationMesh::SamplePartitionType);
 VARIANT_ENUM_CAST(NavigationMesh::ParsedGeometryType);
 VARIANT_ENUM_CAST(NavigationMesh::SourceGeometryMode);
+VARIANT_ENUM_CAST(NavigationMesh::FlatTriangulationAlgorithm);
