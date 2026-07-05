@@ -2397,6 +2397,60 @@ GDScriptParser::ForNode *GDScriptParser::parse_for() {
 	return n_for;
 }
 
+// Walks an `if` condition and registers any `is Type name` binds as
+// `PATTERN_BIND` locals in the true-branch suite. A bind is only accepted when
+// its enclosing type-test is guaranteed to have evaluated `true` in the true
+// branch, i.e. when every ancestor in the condition tree is either the root
+// or a logical AND. Any bind in an OR-branch, under NOT, inside a call, ternary,
+// etc. is rejected with an error. All type-test operands are still traversed
+// so an invalid bind buried inside e.g. a call gets diagnosed instead of
+// silently becoming an "unknown identifier" downstream.
+void GDScriptParser::register_if_type_test_binds(ExpressionNode *p_expression, SuiteNode *p_true_block, bool p_in_true_context) {
+	if (p_expression == nullptr) {
+		return;
+	}
+	switch (p_expression->type) {
+		case Node::TYPE_TEST: {
+			TypeTestNode *tt = static_cast<TypeTestNode *>(p_expression);
+			if (tt->bound_name != nullptr) {
+				if (!p_in_true_context) {
+					push_error(R"(Type-test bind is only allowed when the test is guaranteed to be true in the branch (top level or under "and" chains).)", tt->bound_name);
+				} else if (p_true_block->has_local(tt->bound_name->name)) {
+					const SuiteNode::Local &existing = p_true_block->get_local(tt->bound_name->name);
+					push_error(vformat(R"(There is already a %s named "%s" declared in this scope.)", existing.get_name(), tt->bound_name->name), tt->bound_name);
+				} else if (current_suite != nullptr && current_suite->has_local(tt->bound_name->name)) {
+					const SuiteNode::Local &outer = current_suite->get_local(tt->bound_name->name);
+					push_error(vformat(R"(Type-test bind "%s" shadows an existing %s.)", tt->bound_name->name, outer.get_name()), tt->bound_name);
+				} else {
+					SuiteNode::Local local(tt->bound_name, current_function);
+					local.type = SuiteNode::Local::PATTERN_BIND;
+					p_true_block->add_local(local);
+				}
+			}
+			// Walk into the operand so nested type-test binds get diagnosed.
+			register_if_type_test_binds(tt->operand, p_true_block, false);
+		} break;
+		case Node::BINARY_OPERATOR: {
+			BinaryOpNode *bop = static_cast<BinaryOpNode *>(p_expression);
+			bool child_context = p_in_true_context && bop->operation == BinaryOpNode::OP_LOGIC_AND;
+			register_if_type_test_binds(bop->left_operand, p_true_block, child_context);
+			register_if_type_test_binds(bop->right_operand, p_true_block, child_context);
+		} break;
+		case Node::UNARY_OPERATOR: {
+			UnaryOpNode *uop = static_cast<UnaryOpNode *>(p_expression);
+			register_if_type_test_binds(uop->operand, p_true_block, false);
+		} break;
+		case Node::TERNARY_OPERATOR: {
+			TernaryOpNode *top = static_cast<TernaryOpNode *>(p_expression);
+			register_if_type_test_binds(top->condition, p_true_block, false);
+			register_if_type_test_binds(top->true_expr, p_true_block, false);
+			register_if_type_test_binds(top->false_expr, p_true_block, false);
+		} break;
+		default:
+			break;
+	}
+}
+
 GDScriptParser::IfNode *GDScriptParser::parse_if(const String &p_token) {
 	IfNode *n_if = alloc_node<IfNode>();
 
@@ -2407,7 +2461,14 @@ GDScriptParser::IfNode *GDScriptParser::parse_if(const String &p_token) {
 
 	consume(GDScriptTokenizer::Token::COLON, vformat(R"(Expected ":" after "%s" condition.)", p_token));
 
-	n_if->true_block = parse_suite(vformat(R"("%s" block)", p_token));
+	// Pre-allocate the true-branch suite so any `is Type name` binds in the
+	// condition can be registered as locals before the block body is parsed
+	// (so identifier resolution inside the block finds them).
+	SuiteNode *true_block_suite = alloc_node<SuiteNode>();
+	if (n_if->condition != nullptr) {
+		register_if_type_test_binds(n_if->condition, true_block_suite, true);
+	}
+	n_if->true_block = parse_suite(vformat(R"("%s" block)", p_token), true_block_suite);
 	n_if->true_block->parent_if = n_if;
 
 	if (n_if->true_block->has_continue) {
@@ -3862,6 +3923,18 @@ GDScriptParser::ExpressionNode *GDScriptParser::parse_type_test(ExpressionNode *
 
 	type_test->operand = p_previous_operand;
 	type_test->test_type = parse_type();
+
+	// Optional bind: `obj is Type name` — declares `name` typed as `Type` inside the
+	// enclosing `if` true branch. Rejected below when used with `is not` since the
+	// operand is only guaranteed to be of the tested type when the test succeeds.
+	if (type_test->test_type != nullptr && check(GDScriptTokenizer::Token::IDENTIFIER)) {
+		advance();
+		IdentifierNode *bind = alloc_node<IdentifierNode>();
+		complete_extents(bind);
+		bind->name = previous.get_identifier();
+		type_test->bound_name = bind;
+	}
+
 	complete_extents(type_test);
 
 	if (not_node != nullptr) {
@@ -3875,6 +3948,10 @@ GDScriptParser::ExpressionNode *GDScriptParser::parse_type_test(ExpressionNode *
 		} else {
 			push_error(R"(Expected type specifier after "is not".)");
 		}
+	}
+
+	if (type_test->bound_name != nullptr && not_node != nullptr) {
+		push_error(R"(Cannot bind a name with "is not".)", type_test->bound_name);
 	}
 
 	if (not_node != nullptr) {
@@ -3908,6 +3985,40 @@ GDScriptParser::ExpressionNode *GDScriptParser::parse_invalid_token(ExpressionNo
 GDScriptParser::TypeNode *GDScriptParser::parse_type(bool p_allow_void) {
 	TypeNode *type = alloc_node<TypeNode>();
 	make_completion_context(p_allow_void ? COMPLETION_TYPE_NAME_OR_VOID : COMPLETION_TYPE_NAME, type);
+
+	// Typed callable syntax: `func(A, B, ...) -> R` or `func(A, B, ...)`.
+	// Only valid in a type position (i.e. inside parse_type), so there's no
+	// ambiguity with function declarations or lambda expressions.
+	if (match(GDScriptTokenizer::Token::FUNC)) {
+		type->is_func_type = true;
+		if (!consume(GDScriptTokenizer::Token::PARENTHESIS_OPEN, R"(Expected "(" after "func" in type.)")) {
+			complete_extents(type);
+			return nullptr;
+		}
+		if (!check(GDScriptTokenizer::Token::PARENTHESIS_CLOSE)) {
+			do {
+				TypeNode *param_type = parse_type(false); // Params can't be void.
+				if (param_type == nullptr) {
+					push_error(R"(Expected parameter type in "func" type.)");
+					complete_extents(type);
+					return nullptr;
+				}
+				type->container_types.append(param_type);
+			} while (match(GDScriptTokenizer::Token::COMMA));
+		}
+		consume(GDScriptTokenizer::Token::PARENTHESIS_CLOSE, R"*(Expected ")" or "," in "func" type parameter list.)*");
+		if (match(GDScriptTokenizer::Token::FORWARD_ARROW)) {
+			type->func_return_type = parse_type(true); // Return type can be void.
+			if (type->func_return_type == nullptr) {
+				push_error(R"(Expected return type after "->" in "func" type.)");
+				complete_extents(type);
+				return nullptr;
+			}
+		}
+		complete_extents(type);
+		return type;
+	}
+
 	if (!match(GDScriptTokenizer::Token::IDENTIFIER)) {
 		if (match(GDScriptTokenizer::Token::TK_VOID)) {
 			if (p_allow_void) {
@@ -5381,6 +5492,25 @@ String GDScriptParser::DataType::to_string() const {
 			}
 			if (builtin_type == Variant::DICTIONARY && has_container_element_types()) {
 				return vformat("Dictionary[%s, %s]", get_container_element_type_or_variant(0).to_string(), get_container_element_type_or_variant(1).to_string());
+			}
+			if (builtin_type == Variant::CALLABLE && is_typed_callable) {
+				String args;
+				for (int i = 0; i < callable_arg_types.size(); i++) {
+					if (i > 0) {
+						args += ", ";
+					}
+					args += callable_arg_types[i].to_string();
+				}
+				String ret_str;
+				if (callable_return_type.is_empty() ||
+						(callable_return_type[0].kind == BUILTIN && callable_return_type[0].builtin_type == Variant::NIL)) {
+					ret_str = "void";
+				} else if (callable_return_type[0].kind == VARIANT) {
+					ret_str = "Variant";
+				} else {
+					ret_str = callable_return_type[0].to_string();
+				}
+				return vformat("func(%s) -> %s", args, ret_str);
 			}
 			return Variant::get_type_name(builtin_type);
 		case NATIVE:

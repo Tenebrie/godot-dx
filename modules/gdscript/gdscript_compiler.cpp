@@ -976,6 +976,16 @@ GDScriptCodeGenerator::Address GDScriptCompiler::_parse_expression(CodeGen &code
 				gen->write_assign_true(result);
 			}
 
+			// Type-test bind (`obj is Type name`): copy the operand into the bound
+			// local unconditionally. The bind is only in scope inside the `if` true
+			// branch, so a stale value written when the test fails is unreachable.
+			if (type_test->bound_name != nullptr) {
+				HashMap<StringName, GDScriptCodeGenerator::Address>::Iterator bind_it = codegen.locals.find(type_test->bound_name->name);
+				if (bind_it != codegen.locals.end()) {
+					gen->write_assign(bind_it->value, operand);
+				}
+			}
+
 			if (operand.mode == GDScriptCodeGenerator::Address::TEMPORARY) {
 				gen->pop_temporary();
 			}
@@ -1867,6 +1877,35 @@ GDScriptCodeGenerator::Address GDScriptCompiler::_parse_match_pattern(CodeGen &c
 	return p_previous_test;
 }
 
+bool GDScriptCompiler::_condition_has_type_test_bind(const GDScriptParser::ExpressionNode *p_expression) {
+	if (p_expression == nullptr) {
+		return false;
+	}
+	switch (p_expression->type) {
+		case GDScriptParser::Node::TYPE_TEST: {
+			const GDScriptParser::TypeTestNode *tt = static_cast<const GDScriptParser::TypeTestNode *>(p_expression);
+			if (tt->bound_name != nullptr) {
+				return true;
+			}
+			return _condition_has_type_test_bind(tt->operand);
+		}
+		case GDScriptParser::Node::BINARY_OPERATOR: {
+			const GDScriptParser::BinaryOpNode *bop = static_cast<const GDScriptParser::BinaryOpNode *>(p_expression);
+			return _condition_has_type_test_bind(bop->left_operand) || _condition_has_type_test_bind(bop->right_operand);
+		}
+		case GDScriptParser::Node::UNARY_OPERATOR: {
+			const GDScriptParser::UnaryOpNode *uop = static_cast<const GDScriptParser::UnaryOpNode *>(p_expression);
+			return _condition_has_type_test_bind(uop->operand);
+		}
+		case GDScriptParser::Node::TERNARY_OPERATOR: {
+			const GDScriptParser::TernaryOpNode *top = static_cast<const GDScriptParser::TernaryOpNode *>(p_expression);
+			return _condition_has_type_test_bind(top->condition) || _condition_has_type_test_bind(top->true_expr) || _condition_has_type_test_bind(top->false_expr);
+		}
+		default:
+			return false;
+	}
+}
+
 List<GDScriptCodeGenerator::Address> GDScriptCompiler::_add_block_locals(CodeGen &codegen, const GDScriptParser::SuiteNode *p_block) {
 	List<GDScriptCodeGenerator::Address> addresses;
 	for (int i = 0; i < p_block->locals.size(); i++) {
@@ -2008,6 +2047,18 @@ Error GDScriptCompiler::_parse_block(CodeGen &codegen, const GDScriptParser::Sui
 			} break;
 			case GDScriptParser::Node::IF: {
 				const GDScriptParser::IfNode *if_n = static_cast<const GDScriptParser::IfNode *>(s);
+
+				// If the condition binds names via `obj is Type name`, the binds must be
+				// live during condition evaluation so the type-test can assign the operand
+				// into them. Pre-add the true block's locals in an enclosing codegen scope,
+				// mirroring the pattern used for `match` branches.
+				bool has_type_test_bind = _condition_has_type_test_bind(if_n->condition);
+				List<GDScriptCodeGenerator::Address> true_block_locals;
+				if (has_type_test_bind) {
+					codegen.start_block();
+					true_block_locals = _add_block_locals(codegen, if_n->true_block);
+				}
+
 				GDScriptCodeGenerator::Address condition = _parse_expression(codegen, err, if_n->condition);
 				if (err) {
 					return err;
@@ -2019,7 +2070,7 @@ Error GDScriptCompiler::_parse_block(CodeGen &codegen, const GDScriptParser::Sui
 					codegen.generator->pop_temporary();
 				}
 
-				err = _parse_block(codegen, if_n->true_block);
+				err = _parse_block(codegen, if_n->true_block, !has_type_test_bind);
 				if (err) {
 					return err;
 				}
@@ -2034,6 +2085,11 @@ Error GDScriptCompiler::_parse_block(CodeGen &codegen, const GDScriptParser::Sui
 				}
 
 				gen->write_endif();
+
+				if (has_type_test_bind) {
+					_clear_block_locals(codegen, true_block_locals);
+					codegen.end_block();
+				}
 			} break;
 			case GDScriptParser::Node::FOR: {
 				const GDScriptParser::ForNode *for_n = static_cast<const GDScriptParser::ForNode *>(s);

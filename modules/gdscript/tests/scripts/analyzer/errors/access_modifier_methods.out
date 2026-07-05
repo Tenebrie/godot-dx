@@ -1,4 +1,0 @@
-GDTEST_ANALYZER_ERROR
->> ERROR at line 11: Cannot access private function "_priv()" of "PrivateHolder" from here.
->> ERROR at line 14: Cannot access protected function "_prot()" of "ProtectedHolder" from here.
->> ERROR at line 17: A function can only have one access modifier annotation ("@private" or "@protected").

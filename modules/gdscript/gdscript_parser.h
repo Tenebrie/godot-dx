@@ -127,6 +127,7 @@ public:
 		bool is_meta_type = false;
 		bool is_pseudo_type = false; // For global names that can't be used standalone.
 		bool is_coroutine = false; // For function calls.
+		bool is_typed_callable = false; // For Callable with a declared `func(...) -> T` signature.
 
 		Variant::Type builtin_type = Variant::NIL;
 		StringName native_type;
@@ -137,6 +138,12 @@ public:
 
 		MethodInfo method_info; // For callable/signals.
 		HashMap<StringName, int64_t> enum_values; // For enums.
+
+		// Direct DataType storage for typed callables (`func(A, B) -> R`).
+		// Preferred over `method_info` when set — avoids the lossy DataType↔PropertyInfo
+		// round-trip that collapses CLASS/SCRIPT distinctions for global class refs.
+		Vector<DataType> callable_arg_types;
+		Vector<DataType> callable_return_type; // At most 1 element. Empty ⇒ void return.
 
 		_FORCE_INLINE_ bool is_set() const { return kind != RESOLVING && kind != UNRESOLVED; }
 		_FORCE_INLINE_ bool is_resolving() const { return kind == RESOLVING; }
@@ -240,6 +247,7 @@ public:
 			is_meta_type = p_other.is_meta_type;
 			is_pseudo_type = p_other.is_pseudo_type;
 			is_coroutine = p_other.is_coroutine;
+			is_typed_callable = p_other.is_typed_callable;
 			builtin_type = p_other.builtin_type;
 			native_type = p_other.native_type;
 			enum_type = p_other.enum_type;
@@ -249,6 +257,8 @@ public:
 			method_info = p_other.method_info;
 			enum_values = p_other.enum_values;
 			container_element_types = p_other.container_element_types;
+			callable_arg_types = p_other.callable_arg_types;
+			callable_return_type = p_other.callable_return_type;
 		}
 
 		DataType() = default;
@@ -1218,6 +1228,12 @@ public:
 		Vector<IdentifierNode *> type_chain;
 		Vector<TypeNode *> container_types;
 
+		// Set for `func(A, B) -> C` type expressions. `container_types` holds the
+		// parameter types; `func_return_type` holds the (optional) return type.
+		// If `func_return_type` is null, the return type is treated as void.
+		bool is_func_type = false;
+		TypeNode *func_return_type = nullptr;
+
 		TypeNode *get_container_type_or_null(int p_index) const {
 			return p_index >= 0 && p_index < container_types.size() ? container_types[p_index] : nullptr;
 		}
@@ -1230,6 +1246,7 @@ public:
 	struct TypeTestNode : public ExpressionNode {
 		ExpressionNode *operand = nullptr;
 		TypeNode *test_type = nullptr;
+		IdentifierNode *bound_name = nullptr;
 		DataType test_datatype;
 
 		TypeTestNode() {
@@ -1602,6 +1619,7 @@ private:
 	ContinueNode *parse_continue();
 	ForNode *parse_for();
 	IfNode *parse_if(const String &p_token = "if");
+	void register_if_type_test_binds(ExpressionNode *p_expression, SuiteNode *p_true_block, bool p_in_true_context);
 	MatchNode *parse_match();
 	MatchBranchNode *parse_match_branch();
 	PatternNode *parse_match_pattern(PatternNode *p_root_pattern = nullptr);

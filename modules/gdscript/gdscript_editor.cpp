@@ -1616,12 +1616,16 @@ static void _find_identifiers_in_base(const GDScriptCompletionIdentifier &p_base
 
 				List<MethodInfo> methods;
 				tmp.get_method_list(&methods);
-				for (const MethodInfo &E : methods) {
-					if (base_type.kind == GDScriptParser::DataType::ENUM && base_type.is_meta_type && !(E.flags & METHOD_FLAG_CONST)) {
+				// For a typed Callable, present `.call()` with its declared signature
+				// rather than the built-in vararg / Variant-return form.
+				const bool typed_callable = base_type.builtin_type == Variant::CALLABLE && base_type.is_typed_callable;
+				for (const MethodInfo &E_orig : methods) {
+					if (base_type.kind == GDScriptParser::DataType::ENUM && base_type.is_meta_type && !(E_orig.flags & METHOD_FLAG_CONST)) {
 						// Enum types are static and cannot change, therefore we skip non-const dictionary methods.
 						continue;
 					}
-					ScriptLanguage::CodeCompletionOption option(E.name, ScriptLanguage::CODE_COMPLETION_KIND_FUNCTION, location);
+					const MethodInfo &E = (typed_callable && E_orig.name == SNAME("call")) ? base_type.method_info : E_orig;
+					ScriptLanguage::CodeCompletionOption option(E_orig.name, ScriptLanguage::CODE_COMPLETION_KIND_FUNCTION, location);
 					if (p_add_braces) {
 						if (E.arguments.size() || (E.flags & METHOD_FLAG_VARARG)) {
 							option.insert_text += "(";
@@ -2977,6 +2981,20 @@ static bool _guess_method_return_type_from_base(GDScriptParser::CompletionContex
 				return false;
 			} break;
 			case GDScriptParser::DataType::BUILTIN: {
+				// For a typed Callable, `.call()` returns the declared return type.
+				if (base_type.builtin_type == Variant::CALLABLE && base_type.is_typed_callable && p_method == SNAME("call")) {
+					if (!base_type.callable_return_type.is_empty()) {
+						r_type.type = base_type.callable_return_type[0];
+					} else {
+						// Declared `-> void` (implicit or explicit).
+						r_type.type = GDScriptParser::DataType();
+						r_type.type.kind = GDScriptParser::DataType::BUILTIN;
+						r_type.type.builtin_type = Variant::NIL;
+						r_type.type.type_source = GDScriptParser::DataType::ANNOTATED_EXPLICIT;
+					}
+					return true;
+				}
+
 				Callable::CallError err;
 				Variant tmp;
 				Variant::construct(base_type.builtin_type, tmp, nullptr, 0, err);
@@ -3266,6 +3284,14 @@ static void _list_call_arguments(GDScriptParser::CompletionContext &p_context, c
 				base_type.kind = GDScriptParser::DataType::UNRESOLVED;
 			} break;
 			case GDScriptParser::DataType::BUILTIN: {
+				// For a typed Callable, show `.call()`'s declared signature instead of the
+				// generic `Variant call(...args: Array)` hint.
+				if (base_type.builtin_type == Variant::CALLABLE && base_type.is_typed_callable && method == SNAME("call")) {
+					MethodInfo mi = base_type.method_info;
+					mi.name = "call";
+					r_arghint = _make_arguments_hint(mi, p_argidx);
+					return;
+				}
 				// For Signal.emit()/connect(), use the signal's declared parameter types for the hint.
 				if (base_type.builtin_type == Variant::SIGNAL && base_type.method_info.arguments.size() > 0) {
 					if (method == SNAME("emit")) {
@@ -3300,6 +3326,14 @@ static void _list_call_arguments(GDScriptParser::CompletionContext &p_context, c
 					if (err.error != Callable::CallError::CALL_OK) {
 						return;
 					}
+				}
+
+				// For a typed Callable, show `.call()`'s declared signature.
+				if (base_type.builtin_type == Variant::CALLABLE && base_type.is_typed_callable && method == SNAME("call")) {
+					MethodInfo mi = base_type.method_info;
+					mi.name = "call";
+					r_arghint = _make_arguments_hint(mi, p_argidx);
+					return;
 				}
 
 				List<MethodInfo> methods;

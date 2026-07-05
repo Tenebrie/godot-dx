@@ -1,0 +1,9 @@
+GDTEST_OK
+dog corgi
+cat indoor=false
+animal generic
+unknown
+dog2 breed=corgi
+both corgi false
+nested corgi
+only_read.breed=corgi

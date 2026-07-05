@@ -677,6 +677,34 @@ GDScriptParser::DataType GDScriptAnalyzer::resolve_datatype(GDScriptParser::Type
 	GDScriptParser::DataType result;
 	result.type_source = GDScriptParser::DataType::ANNOTATED_EXPLICIT;
 
+	if (p_type->is_func_type) {
+		// Typed callable: `func(A, B) -> R`.
+		// Represented as a Callable with parameter and return DataTypes stored
+		// directly (see `callable_arg_types` / `callable_return_type`). We also
+		// populate `method_info` for compatibility with paths that still read it,
+		// but the direct DataTypes are the source of truth to avoid the lossy
+		// DataType↔PropertyInfo round-trip that collapses CLASS/SCRIPT distinctions.
+		MethodInfo mi;
+		for (int i = 0; i < p_type->container_types.size(); i++) {
+			GDScriptParser::DataType param_type = type_from_metatype(resolve_datatype(p_type->container_types[i]));
+			param_type.is_constant = false;
+			result.callable_arg_types.push_back(param_type);
+			mi.arguments.push_back(param_type.to_property_info(vformat("arg%d", i)));
+		}
+		if (p_type->func_return_type != nullptr) {
+			GDScriptParser::DataType ret_type = type_from_metatype(resolve_datatype(p_type->func_return_type));
+			ret_type.is_constant = false;
+			result.callable_return_type.push_back(ret_type);
+			mi.return_val = ret_type.to_property_info(String());
+		}
+		result.kind = GDScriptParser::DataType::BUILTIN;
+		result.builtin_type = Variant::CALLABLE;
+		result.method_info = mi;
+		result.is_typed_callable = true;
+		p_type->set_datatype(result);
+		return result;
+	}
+
 	if (p_type->type_chain.is_empty()) {
 		// void.
 		result.kind = GDScriptParser::DataType::BUILTIN;
@@ -2133,6 +2161,36 @@ void GDScriptAnalyzer::resolve_assignable(GDScriptParser::AssignableNode *p_assi
 			GDScriptParser::DictionaryNode *dictionary = static_cast<GDScriptParser::DictionaryNode *>(p_assignable->initializer);
 			if (has_specified_type && specified_type.has_container_element_types()) {
 				update_dictionary_literal_element_type(dictionary, specified_type.get_container_element_type_or_variant(0), specified_type.get_container_element_type_or_variant(1));
+			}
+		} else if (has_specified_type && specified_type.builtin_type == Variant::CALLABLE && specified_type.is_typed_callable &&
+				p_assignable->initializer->type == GDScriptParser::Node::LAMBDA) {
+			// Case B: propagate the LHS-declared parameter types into the lambda's untyped
+			// parameters before its body is resolved (bodies run in resolve_pending_lambda_bodies()
+			// called from resolve_suite after this function returns). Mirrors signal.connect().
+			GDScriptParser::LambdaNode *lambda = static_cast<GDScriptParser::LambdaNode *>(p_assignable->initializer);
+			if (lambda->function != nullptr) {
+				int arg_count = MIN(lambda->function->parameters.size(), specified_type.callable_arg_types.size());
+				bool any_updated = false;
+				for (int i = 0; i < arg_count; i++) {
+					GDScriptParser::ParameterNode *param = lambda->function->parameters[i];
+					if (param->datatype_specifier == nullptr && param->get_datatype().is_variant()) {
+						GDScriptParser::DataType inferred = specified_type.callable_arg_types[i];
+						inferred.type_source = GDScriptParser::DataType::ANNOTATED_INFERRED;
+						inferred.is_constant = false;
+						param->set_datatype(inferred);
+						any_updated = true;
+					}
+				}
+				// Keep FunctionNode.info in sync so downstream reads of the lambda's
+				// signature (e.g. `.call()` type-check on the lambda directly) see
+				// the inferred parameter types.
+				if (any_updated) {
+					for (int i = 0; i < arg_count; i++) {
+						lambda->function->info.arguments.write[i] =
+								lambda->function->parameters[i]->get_datatype().to_property_info(
+										lambda->function->parameters[i]->identifier->name);
+					}
+				}
 			}
 		}
 
@@ -3852,6 +3910,30 @@ void GDScriptAnalyzer::reduce_call(GDScriptParser::CallNode *p_call, bool p_is_a
 			}
 		}
 
+		// Override Callable.call() parameter types and return type with the callable's declared signature.
+		// A typed Callable (declared as `func(A, B) -> R` or inferred from a fully-typed lambda)
+		// carries `is_typed_callable = true`. We use the directly stored DataTypes rather than
+		// round-tripping through `method_info`'s PropertyInfo — the round-trip collapses global
+		// class refs into their file paths, breaking compatibility checks.
+		if (base_type.kind == GDScriptParser::DataType::BUILTIN && base_type.builtin_type == Variant::CALLABLE &&
+				base_type.is_typed_callable && p_call->function_name == SNAME("call")) {
+			const MethodInfo &callable_mi = base_type.method_info;
+			par_types.clear();
+			for (int i = 0; i < base_type.callable_arg_types.size(); i++) {
+				par_types.push_back(base_type.callable_arg_types[i]);
+			}
+			default_arg_count = callable_mi.default_arguments.size();
+			is_signal_emit_vararg = (callable_mi.flags & METHOD_FLAG_VARARG) != 0;
+			if (!base_type.callable_return_type.is_empty()) {
+				return_type = base_type.callable_return_type[0];
+			} else {
+				return_type = GDScriptParser::DataType();
+				return_type.kind = GDScriptParser::DataType::BUILTIN;
+				return_type.builtin_type = Variant::NIL;
+				return_type.type_source = GDScriptParser::DataType::ANNOTATED_EXPLICIT;
+			}
+		}
+
 		validate_call_arg(par_types, default_arg_count, is_signal_emit_vararg, p_call);
 
 		if (base_type.kind == GDScriptParser::DataType::ENUM && base_type.is_meta_type) {
@@ -4960,6 +5042,33 @@ void GDScriptAnalyzer::reduce_lambda(GDScriptParser::LambdaNode *p_lambda) {
 	resolve_function_signature(p_lambda->function, p_lambda, true);
 	current_lambda = previous_lambda;
 
+	// Case A: if the lambda has a fully declared signature (all params typed and
+	// an explicit return type), promote its DataType to a typed callable. Callers
+	// like `var x = <lambda>` will then infer x's type as `func(A, ...) -> R`.
+	// A partially-typed lambda is left as plain Callable to avoid noisy strict
+	// checks against inferred Variant slots. Variadic lambdas are also left as
+	// plain Callable — the `func(...)` type syntax doesn't express variadic, so
+	// promoting them would incorrectly reject valid extra arguments at `.call()`.
+	bool has_full_signature = p_lambda->function->return_type != nullptr && !p_lambda->function->is_vararg();
+	for (int i = 0; has_full_signature && i < p_lambda->function->parameters.size(); i++) {
+		if (p_lambda->function->parameters[i]->datatype_specifier == nullptr) {
+			has_full_signature = false;
+		}
+	}
+	if (has_full_signature) {
+		lambda_type.method_info = p_lambda->function->info;
+		for (int i = 0; i < p_lambda->function->parameters.size(); i++) {
+			GDScriptParser::DataType pt = p_lambda->function->parameters[i]->get_datatype();
+			pt.is_constant = false;
+			lambda_type.callable_arg_types.push_back(pt);
+		}
+		GDScriptParser::DataType ret = p_lambda->function->get_datatype();
+		ret.is_constant = false;
+		lambda_type.callable_return_type.push_back(ret);
+		lambda_type.is_typed_callable = true;
+		p_lambda->set_datatype(lambda_type);
+	}
+
 	pending_body_resolution_lambdas.push_back(p_lambda);
 }
 
@@ -5470,6 +5579,13 @@ void GDScriptAnalyzer::reduce_type_test(GDScriptParser::TypeTestNode *p_type_tes
 	GDScriptParser::DataType operand_type = p_type_test->operand->get_datatype();
 	GDScriptParser::DataType test_type = type_from_metatype(resolve_datatype(p_type_test->test_type));
 	p_type_test->test_datatype = test_type;
+
+	// Type the bound identifier (from `obj is Type name`) so references inside
+	// the `if` true branch resolve to the tested type. The parser has already
+	// registered this identifier as a PATTERN_BIND local in the true block.
+	if (p_type_test->bound_name != nullptr) {
+		p_type_test->bound_name->set_datatype(test_type);
+	}
 
 	if (!operand_type.is_set() || !test_type.is_set()) {
 		return;
@@ -6689,6 +6805,40 @@ bool GDScriptAnalyzer::check_type_compatibility(const GDScriptParser::DataType &
 			}
 			if (valid && p_target.has_container_element_type(1) && p_source.has_container_element_type(1)) {
 				valid = p_target.get_container_element_type(1) == p_source.get_container_element_type(1);
+			}
+		}
+		// Typed Callables: `func(A, B) -> R`. Both target and source must be typed for a strict check.
+		// If only the target is typed, accept — the caller is expected to mark it unsafe (mirrors typed-array behavior).
+		if (valid && p_target.builtin_type == Variant::CALLABLE && p_source.builtin_type == Variant::CALLABLE) {
+			if (p_target.is_typed_callable && p_source.is_typed_callable) {
+				// Use direct DataTypes and delegate to check_type_compatibility recursively so
+				// global class refs (CLASS/SCRIPT) resolve through their proper compatibility rules.
+				// Parameter position uses exact equality (via mutual compatibility) — no
+				// contravariance/covariance yet, matching typed-array strictness.
+				if (p_target.callable_arg_types.size() != p_source.callable_arg_types.size()) {
+					valid = false;
+				} else {
+					for (int i = 0; valid && i < p_target.callable_arg_types.size(); i++) {
+						const GDScriptParser::DataType &t_arg = p_target.callable_arg_types[i];
+						const GDScriptParser::DataType &s_arg = p_source.callable_arg_types[i];
+						valid = check_type_compatibility(t_arg, s_arg) && check_type_compatibility(s_arg, t_arg);
+					}
+					if (valid) {
+						auto ret_or_void = [](const GDScriptParser::DataType &type_holder) -> GDScriptParser::DataType {
+							if (!type_holder.callable_return_type.is_empty()) {
+								return type_holder.callable_return_type[0];
+							}
+							GDScriptParser::DataType v;
+							v.kind = GDScriptParser::DataType::BUILTIN;
+							v.builtin_type = Variant::NIL;
+							v.type_source = GDScriptParser::DataType::ANNOTATED_EXPLICIT;
+							return v;
+						};
+						const GDScriptParser::DataType t_ret = ret_or_void(p_target);
+						const GDScriptParser::DataType s_ret = ret_or_void(p_source);
+						valid = check_type_compatibility(t_ret, s_ret) && check_type_compatibility(s_ret, t_ret);
+					}
+				}
 			}
 		}
 		return valid;

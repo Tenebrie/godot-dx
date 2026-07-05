@@ -1,0 +1,2 @@
+GDTEST_PARSER_ERROR
+Type-test bind is only allowed when the test is guaranteed to be true in the branch (top level or under "and" chains).
