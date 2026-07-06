@@ -3982,14 +3982,14 @@ GDScriptParser::ExpressionNode *GDScriptParser::parse_invalid_token(ExpressionNo
 	return p_previous_operand;
 }
 
-GDScriptParser::TypeNode *GDScriptParser::parse_type(bool p_allow_void) {
+GDScriptParser::TypeNode *GDScriptParser::parse_type(bool p_allow_void, IdentifierNode *p_first_identifier) {
 	TypeNode *type = alloc_node<TypeNode>();
 	make_completion_context(p_allow_void ? COMPLETION_TYPE_NAME_OR_VOID : COMPLETION_TYPE_NAME, type);
 
 	// Typed callable syntax: `func(A, B, ...) -> R` or `func(A, B, ...)`.
 	// Only valid in a type position (i.e. inside parse_type), so there's no
 	// ambiguity with function declarations or lambda expressions.
-	if (match(GDScriptTokenizer::Token::FUNC)) {
+	if (p_first_identifier == nullptr && match(GDScriptTokenizer::Token::FUNC)) {
 		type->is_func_type = true;
 		if (!consume(GDScriptTokenizer::Token::PARENTHESIS_OPEN, R"(Expected "(" after "func" in type.)")) {
 			complete_extents(type);
@@ -3997,7 +3997,22 @@ GDScriptParser::TypeNode *GDScriptParser::parse_type(bool p_allow_void) {
 		}
 		if (!check(GDScriptTokenizer::Token::PARENTHESIS_CLOSE)) {
 			do {
-				TypeNode *param_type = parse_type(false); // Params can't be void.
+				TypeNode *param_type = nullptr;
+				// Allow optional `name: Type` form for documentation.
+				// If we see IDENTIFIER, consume it and check for COLON to decide.
+				if (check(GDScriptTokenizer::Token::IDENTIFIER)) {
+					advance();
+					IdentifierNode *first = parse_identifier();
+					if (match(GDScriptTokenizer::Token::COLON)) {
+						// It was a parameter name; discard and parse the actual type.
+						param_type = parse_type(false);
+					} else {
+						// It was the type itself; continue parsing from that identifier.
+						param_type = parse_type(false, first);
+					}
+				} else {
+					param_type = parse_type(false); // Params can't be void.
+				}
 				if (param_type == nullptr) {
 					push_error(R"(Expected parameter type in "func" type.)");
 					complete_extents(type);
@@ -4019,22 +4034,27 @@ GDScriptParser::TypeNode *GDScriptParser::parse_type(bool p_allow_void) {
 		return type;
 	}
 
-	if (!match(GDScriptTokenizer::Token::IDENTIFIER)) {
-		if (match(GDScriptTokenizer::Token::TK_VOID)) {
-			if (p_allow_void) {
-				complete_extents(type);
-				TypeNode *void_type = type;
-				return void_type;
-			} else {
-				push_error(R"("void" is only allowed for a function return type.)");
+	IdentifierNode *type_element = nullptr;
+	if (p_first_identifier != nullptr) {
+		type_element = p_first_identifier;
+	} else {
+		if (!match(GDScriptTokenizer::Token::IDENTIFIER)) {
+			if (match(GDScriptTokenizer::Token::TK_VOID)) {
+				if (p_allow_void) {
+					complete_extents(type);
+					TypeNode *void_type = type;
+					return void_type;
+				} else {
+					push_error(R"("void" is only allowed for a function return type.)");
+				}
 			}
+			// Leave error message to the caller who knows the context.
+			complete_extents(type);
+			return nullptr;
 		}
-		// Leave error message to the caller who knows the context.
-		complete_extents(type);
-		return nullptr;
-	}
 
-	IdentifierNode *type_element = parse_identifier();
+		type_element = parse_identifier();
+	}
 
 	type->type_chain.push_back(type_element);
 
