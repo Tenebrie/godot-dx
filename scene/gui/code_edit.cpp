@@ -3963,7 +3963,11 @@ void CodeEdit::_filter_code_completion_candidates_impl() {
 			code_completion_options_new.push_back(option);
 
 			if (theme_cache.font.is_valid()) {
-				max_width = MAX(max_width, theme_cache.font->get_string_size(option.display, HORIZONTAL_ALIGNMENT_LEFT, -1, theme_cache.font_size).width + offset);
+				int display_width = theme_cache.font->get_string_size(option.display, HORIZONTAL_ALIGNMENT_LEFT, -1, theme_cache.font_size).width + offset;
+				if (!option.type_text.is_empty()) {
+					display_width += theme_cache.font->get_string_size(option.type_text, HORIZONTAL_ALIGNMENT_LEFT, -1, theme_cache.font_size).width + 4 * theme_cache.code_completion_icon_separation;
+				}
+				max_width = MAX(max_width, display_width);
 			}
 			continue;
 		}
