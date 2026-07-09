@@ -1,2 +1,2 @@
 GDTEST_PARSER_ERROR
-Cannot bind a name with "is not".
+"is not Type name" bind requires the "if" body to always exit (e.g. via "return").

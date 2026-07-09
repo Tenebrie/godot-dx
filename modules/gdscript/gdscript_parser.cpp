@@ -2405,6 +2405,10 @@ GDScriptParser::ForNode *GDScriptParser::parse_for() {
 // etc. is rejected with an error. All type-test operands are still traversed
 // so an invalid bind buried inside e.g. a call gets diagnosed instead of
 // silently becoming an "unknown identifier" downstream.
+//
+// Binds appearing directly under `not (type-test)` (i.e. the `is not T name`
+// syntax) are skipped here; they are handled by
+// `register_if_type_test_binds_negated` after the true block is parsed.
 void GDScriptParser::register_if_type_test_binds(ExpressionNode *p_expression, SuiteNode *p_true_block, bool p_in_true_context) {
 	if (p_expression == nullptr) {
 		return;
@@ -2438,6 +2442,16 @@ void GDScriptParser::register_if_type_test_binds(ExpressionNode *p_expression, S
 		} break;
 		case Node::UNARY_OPERATOR: {
 			UnaryOpNode *uop = static_cast<UnaryOpNode *>(p_expression);
+			// `is not T name` parses as UnaryOp(NOT, TypeTest(bound_name)) — skip the
+			// bind here (handled by the negated walker) but still diagnose nested binds
+			// inside the operand's own operand.
+			if (uop->operation == UnaryOpNode::OP_LOGIC_NOT && uop->operand != nullptr && uop->operand->type == Node::TYPE_TEST) {
+				TypeTestNode *tt = static_cast<TypeTestNode *>(uop->operand);
+				if (tt->bound_name != nullptr) {
+					register_if_type_test_binds(tt->operand, p_true_block, false);
+					break;
+				}
+			}
 			register_if_type_test_binds(uop->operand, p_true_block, false);
 		} break;
 		case Node::TERNARY_OPERATOR: {
@@ -2448,6 +2462,76 @@ void GDScriptParser::register_if_type_test_binds(ExpressionNode *p_expression, S
 		} break;
 		default:
 			break;
+	}
+}
+
+// Walks an `if` condition looking for `is not Type name` binds (parsed as
+// `UnaryOp(NOT, TypeTest(bound_name))`) and registers them as `PATTERN_BIND`
+// locals in the enclosing suite so they're visible in the code following the
+// `if`. A negated bind is only accepted when the operand is guaranteed to be
+// of the tested type in that "fall-through" path, i.e. when:
+//   * every ancestor in the condition tree is either the root or a logical OR
+//     (dual of the AND rule for positive binds), and
+//   * the `if`'s true block never falls through (`has_return` is set).
+// Otherwise an error is reported and the bind is dropped.
+void GDScriptParser::register_if_type_test_binds_negated(ExpressionNode *p_expression, SuiteNode *p_outer_suite, bool p_true_block_always_exits, bool p_in_false_context) {
+	if (p_expression == nullptr) {
+		return;
+	}
+	switch (p_expression->type) {
+		case Node::UNARY_OPERATOR: {
+			UnaryOpNode *uop = static_cast<UnaryOpNode *>(p_expression);
+			if (uop->operation == UnaryOpNode::OP_LOGIC_NOT && uop->operand != nullptr && uop->operand->type == Node::TYPE_TEST) {
+				TypeTestNode *tt = static_cast<TypeTestNode *>(uop->operand);
+				if (tt->bound_name != nullptr) {
+					if (!p_in_false_context) {
+						push_error(R"("is not Type name" bind is only allowed when the test is guaranteed to be true in the fall-through path (top level or under "or" chains).)", tt->bound_name);
+					} else if (!p_true_block_always_exits) {
+						push_error(R"("is not Type name" bind requires the "if" body to always exit (e.g. via "return").)", tt->bound_name);
+					} else if (p_outer_suite->has_local(tt->bound_name->name)) {
+						const SuiteNode::Local &existing = p_outer_suite->get_local(tt->bound_name->name);
+						push_error(vformat(R"(There is already a %s named "%s" declared in this scope.)", existing.get_name(), tt->bound_name->name), tt->bound_name);
+					} else {
+						SuiteNode::Local local(tt->bound_name, current_function);
+						local.type = SuiteNode::Local::PATTERN_BIND;
+						p_outer_suite->add_local(local);
+					}
+					return;
+				}
+			}
+		} break;
+		case Node::BINARY_OPERATOR: {
+			BinaryOpNode *bop = static_cast<BinaryOpNode *>(p_expression);
+			bool child_context = p_in_false_context && bop->operation == BinaryOpNode::OP_LOGIC_OR;
+			register_if_type_test_binds_negated(bop->left_operand, p_outer_suite, p_true_block_always_exits, child_context);
+			register_if_type_test_binds_negated(bop->right_operand, p_outer_suite, p_true_block_always_exits, child_context);
+		} break;
+		default:
+			break;
+	}
+}
+
+bool GDScriptParser::condition_has_negated_type_test_bind(ExpressionNode *p_expression) {
+	if (p_expression == nullptr) {
+		return false;
+	}
+	switch (p_expression->type) {
+		case Node::UNARY_OPERATOR: {
+			UnaryOpNode *uop = static_cast<UnaryOpNode *>(p_expression);
+			if (uop->operation == UnaryOpNode::OP_LOGIC_NOT && uop->operand != nullptr && uop->operand->type == Node::TYPE_TEST) {
+				TypeTestNode *tt = static_cast<TypeTestNode *>(uop->operand);
+				if (tt->bound_name != nullptr) {
+					return true;
+				}
+			}
+			return condition_has_negated_type_test_bind(uop->operand);
+		}
+		case Node::BINARY_OPERATOR: {
+			BinaryOpNode *bop = static_cast<BinaryOpNode *>(p_expression);
+			return condition_has_negated_type_test_bind(bop->left_operand) || condition_has_negated_type_test_bind(bop->right_operand);
+		}
+		default:
+			return false;
 	}
 }
 
@@ -2470,6 +2554,13 @@ GDScriptParser::IfNode *GDScriptParser::parse_if(const String &p_token) {
 	}
 	n_if->true_block = parse_suite(vformat(R"("%s" block)", p_token), true_block_suite);
 	n_if->true_block->parent_if = n_if;
+
+	// After the true block is parsed we know whether it can fall through; register
+	// any `is not Type name` binds in the enclosing scope so they're visible in
+	// the code following this `if`.
+	if (n_if->condition != nullptr && current_suite != nullptr && condition_has_negated_type_test_bind(n_if->condition)) {
+		register_if_type_test_binds_negated(n_if->condition, current_suite, n_if->true_block->has_return, true);
+	}
 
 	if (n_if->true_block->has_continue) {
 		current_suite->has_continue = true;
@@ -3925,8 +4016,9 @@ GDScriptParser::ExpressionNode *GDScriptParser::parse_type_test(ExpressionNode *
 	type_test->test_type = parse_type();
 
 	// Optional bind: `obj is Type name` — declares `name` typed as `Type` inside the
-	// enclosing `if` true branch. Rejected below when used with `is not` since the
-	// operand is only guaranteed to be of the tested type when the test succeeds.
+	// enclosing `if` true branch. `obj is not Type name` is also allowed, and binds
+	// `name` in the enclosing scope after the `if` (only valid when the `if` body
+	// is guaranteed to exit — see `register_if_type_test_binds_negated`).
 	if (type_test->test_type != nullptr && check(GDScriptTokenizer::Token::IDENTIFIER)) {
 		advance();
 		IdentifierNode *bind = alloc_node<IdentifierNode>();
@@ -3948,10 +4040,6 @@ GDScriptParser::ExpressionNode *GDScriptParser::parse_type_test(ExpressionNode *
 		} else {
 			push_error(R"(Expected type specifier after "is not".)");
 		}
-	}
-
-	if (type_test->bound_name != nullptr && not_node != nullptr) {
-		push_error(R"(Cannot bind a name with "is not".)", type_test->bound_name);
 	}
 
 	if (not_node != nullptr) {

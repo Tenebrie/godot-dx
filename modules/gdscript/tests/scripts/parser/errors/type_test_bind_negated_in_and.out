@@ -1,0 +1,2 @@
+GDTEST_PARSER_ERROR
+"is not Type name" bind is only allowed when the test is guaranteed to be true in the fall-through path (top level or under "or" chains).
