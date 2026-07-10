@@ -1,0 +1,10 @@
+GDTEST_OK
+typed_lambda 1
+typed_lambda 2
+typed_lambda 3
+untyped_lambda 10
+untyped_lambda 20
+plain_fn 100
+plain_fn 200
+two_arg_fn 1 one
+two_arg_fn 2 two

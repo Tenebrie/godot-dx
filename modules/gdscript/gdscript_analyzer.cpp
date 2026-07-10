@@ -3923,7 +3923,9 @@ void GDScriptAnalyzer::reduce_call(GDScriptParser::CallNode *p_call, bool p_is_a
 				par_types.push_back(base_type.callable_arg_types[i]);
 			}
 			default_arg_count = callable_mi.default_arguments.size();
-			is_signal_emit_vararg = (callable_mi.flags & METHOD_FLAG_VARARG) != 0;
+			// Callable.call() tolerates extra arguments — they are silently ignored at runtime,
+			// mirroring how signal emission tolerates connected callables with fewer parameters.
+			is_signal_emit_vararg = true;
 			if (!base_type.callable_return_type.is_empty()) {
 				return_type = base_type.callable_return_type[0];
 			} else {

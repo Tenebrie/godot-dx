@@ -1933,6 +1933,13 @@ Variant GDScriptFunction::call(GDScriptInstance *p_instance, const Variant **p_a
 				if (call_ret) {
 					GET_INSTRUCTION_ARG(ret, argc + 1);
 					base->callp(*methodname, (const Variant **)argptrs, argc, temp_ret, err);
+					// Callable.call() tolerates extra arguments — retry with the expected count
+					// so surplus values are silently ignored. Mirrors the signal-emit fallback in
+					// Object::emit_signalp (core/object/object.cpp).
+					if (err.error == Callable::CallError::CALL_ERROR_TOO_MANY_ARGUMENTS && err.expected >= 0 && err.expected < argc && base->get_type() == Variant::CALLABLE && *methodname == SNAME("call")) {
+						err.error = Callable::CallError::CALL_OK;
+						base->callp(*methodname, (const Variant **)argptrs, err.expected, temp_ret, err);
+					}
 					*ret = temp_ret;
 #ifdef DEBUG_ENABLED
 					if (ret->get_type() == Variant::NIL) {
@@ -1963,6 +1970,10 @@ Variant GDScriptFunction::call(GDScriptInstance *p_instance, const Variant **p_a
 #endif
 				} else {
 					base->callp(*methodname, (const Variant **)argptrs, argc, temp_ret, err);
+					if (err.error == Callable::CallError::CALL_ERROR_TOO_MANY_ARGUMENTS && err.expected >= 0 && err.expected < argc && base->get_type() == Variant::CALLABLE && *methodname == SNAME("call")) {
+						err.error = Callable::CallError::CALL_OK;
+						base->callp(*methodname, (const Variant **)argptrs, err.expected, temp_ret, err);
+					}
 				}
 #ifdef DEBUG_ENABLED
 
