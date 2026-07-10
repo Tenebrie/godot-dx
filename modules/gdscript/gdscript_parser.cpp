@@ -2487,7 +2487,7 @@ void GDScriptParser::register_if_type_test_binds_negated(ExpressionNode *p_expre
 					if (!p_in_false_context) {
 						push_error(R"("is not Type name" bind is only allowed when the test is guaranteed to be true in the fall-through path (top level or under "or" chains).)", tt->bound_name);
 					} else if (!p_true_block_always_exits) {
-						push_error(R"("is not Type name" bind requires the "if" body to always exit (e.g. via "return").)", tt->bound_name);
+						push_error(R"("is not Type name" bind requires the "if" body to always exit (via "return", "break", or "continue").)", tt->bound_name);
 					} else if (p_outer_suite->has_local(tt->bound_name->name)) {
 						const SuiteNode::Local &existing = p_outer_suite->get_local(tt->bound_name->name);
 						push_error(vformat(R"(There is already a %s named "%s" declared in this scope.)", existing.get_name(), tt->bound_name->name), tt->bound_name);
@@ -2509,6 +2509,41 @@ void GDScriptParser::register_if_type_test_binds_negated(ExpressionNode *p_expre
 		default:
 			break;
 	}
+}
+
+// True when the suite never falls through — every reachable path ends in a
+// `return`, `break`, or `continue`. Used to gate `is not Type name` binds so
+// they only expose the narrowed value in code that's reached exactly when the
+// type test succeeded.
+bool GDScriptParser::suite_always_exits(const SuiteNode *p_suite) {
+	if (p_suite == nullptr) {
+		return false;
+	}
+	// The parser already tracks "all paths return" precisely; reuse it.
+	if (p_suite->has_return) {
+		return true;
+	}
+	for (int i = 0; i < p_suite->statements.size(); i++) {
+		const Node *stmt = p_suite->statements[i];
+		if (stmt == nullptr) {
+			continue;
+		}
+		switch (stmt->type) {
+			case Node::BREAK:
+			case Node::CONTINUE:
+			case Node::RETURN:
+				return true;
+			case Node::IF: {
+				const IfNode *if_n = static_cast<const IfNode *>(stmt);
+				if (if_n->false_block != nullptr && suite_always_exits(if_n->true_block) && suite_always_exits(if_n->false_block)) {
+					return true;
+				}
+			} break;
+			default:
+				break;
+		}
+	}
+	return false;
 }
 
 bool GDScriptParser::condition_has_negated_type_test_bind(ExpressionNode *p_expression) {
@@ -2559,7 +2594,7 @@ GDScriptParser::IfNode *GDScriptParser::parse_if(const String &p_token) {
 	// any `is not Type name` binds in the enclosing scope so they're visible in
 	// the code following this `if`.
 	if (n_if->condition != nullptr && current_suite != nullptr && condition_has_negated_type_test_bind(n_if->condition)) {
-		register_if_type_test_binds_negated(n_if->condition, current_suite, n_if->true_block->has_return, true);
+		register_if_type_test_binds_negated(n_if->condition, current_suite, suite_always_exits(n_if->true_block), true);
 	}
 
 	if (n_if->true_block->has_continue) {

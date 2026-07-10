@@ -1,2 +1,2 @@
 GDTEST_PARSER_ERROR
-"is not Type name" bind requires the "if" body to always exit (e.g. via "return").
+"is not Type name" bind requires the "if" body to always exit (via "return", "break", or "continue").

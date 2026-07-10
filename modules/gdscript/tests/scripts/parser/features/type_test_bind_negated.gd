@@ -53,3 +53,32 @@ func test():
 	if pet is not Dog got_dog:
 		return
 	print(got_dog.breed)
+
+	# `continue` also exits the true block, so the bind works in `for` bodies.
+	var items: Array = [1, "two", 3, "four", 5]
+	var int_sum := 0
+	for item: Variant in items:
+		if item is not int in_int:
+			continue
+		int_sum += in_int
+	print("int_sum " + str(int_sum))
+
+	# `break` also counts as an exit.
+	var first_str := ""
+	for item: Variant in items:
+		if item is not String br_str:
+			continue
+		first_str = br_str
+		break
+	print("first_str " + first_str)
+
+	# Nested if-else where both branches exit (mix of break) still counts.
+	var nested: Variant = "ok"
+	while true:
+		if nested is not String nested_str:
+			if true:
+				break
+			else:
+				break
+		print("nested " + nested_str)
+		break
