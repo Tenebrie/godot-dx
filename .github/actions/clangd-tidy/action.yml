@@ -18,6 +18,13 @@ runs:
           echo "::error::clangd-tidy checker requires a compilation database to function"
           exit 1
         fi
+        files='${{ inputs.changed-files }}'
+        eval "set -- $files"
+        if [ "$#" -eq 0 ] || { [ "$#" -eq 1 ] && [ -z "$1" ]; }; then
+          echo "No clangd-eligible files changed; skipping."
+          echo "::endgroup::"
+          exit 0
+        fi
         echo "::endgroup::"
 
         echo "::group::Installing clangd-tidy"
@@ -26,5 +33,5 @@ runs:
         echo "::endgroup::"
 
         echo "::group::Running clangd-tidy"
-        clangd-tidy ${{ inputs.changed-files }}
+        clangd-tidy "$@"
         echo "::endgroup::"
