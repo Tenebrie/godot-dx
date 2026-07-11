@@ -7395,6 +7395,8 @@ void RichTextLabel::set_text(const String &p_bbcode) {
 	} else {
 		_apply_translation();
 	}
+
+	emit_signal(SceneStringName(text_changed), text);
 }
 
 void RichTextLabel::_apply_translation() {
@@ -8055,6 +8057,8 @@ void RichTextLabel::_bind_methods() {
 	ADD_SIGNAL(MethodInfo("meta_hover_ended", PropertyInfo(Variant::NIL, "meta", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_NIL_IS_VARIANT)));
 
 	ADD_SIGNAL(MethodInfo("finished"));
+
+	ADD_SIGNAL(MethodInfo("text_changed", PropertyInfo(Variant::STRING, "new_text")));
 
 	BIND_ENUM_CONSTANT(LIST_NUMBERS);
 	BIND_ENUM_CONSTANT(LIST_LETTERS);

@@ -849,6 +849,12 @@
 				Triggers when the mouse enters a meta tag.
 			</description>
 		</signal>
+		<signal name="text_changed">
+			<param index="0" name="new_text" type="String" />
+			<description>
+				Emitted when the text is set via [method set_text] or the [member text] property. The parameter is the new raw text (before BBCode parsing and translation).
+			</description>
+		</signal>
 	</signals>
 	<constants>
 		<constant name="LIST_NUMBERS" value="0" enum="ListType">
