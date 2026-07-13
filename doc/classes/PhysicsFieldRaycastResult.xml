@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="PhysicsFieldRaycastResult" inherits="RefCounted" api_type="core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../class.xsd">
+	<brief_description>
+	</brief_description>
+	<description>
+	</description>
+	<tutorials>
+	</tutorials>
+	<methods>
+		<method name="clear">
+			<return type="void" />
+			<description>
+			</description>
+		</method>
+		<method name="get_hit" qualifiers="const">
+			<return type="PhysicsFieldRaycastResultHit" />
+			<param index="0" name="index" type="int" />
+			<description>
+			</description>
+		</method>
+		<method name="get_hit_fraction" qualifiers="const">
+			<return type="float" />
+			<param index="0" name="index" type="int" />
+			<description>
+			</description>
+		</method>
+		<method name="get_hit_position" qualifiers="const">
+			<return type="Vector3" />
+			<param index="0" name="index" type="int" />
+			<description>
+			</description>
+		</method>
+	</methods>
+	<members>
+		<member name="has_hits" type="bool" setter="" getter="get_has_hits">
+		</member>
+		<member name="hit_count" type="int" setter="" getter="get_hit_count">
+		</member>
+	</members>
+</class>

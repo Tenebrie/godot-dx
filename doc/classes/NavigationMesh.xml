@@ -102,8 +102,10 @@
 			Flat mode is orders of magnitude faster than the regular 3D bake and is suited for 2.5D or top-down games that only need a single walkable layer, e.g. for frequent dynamic rebakes. Source geometry triangles that rise above the plane by more than [member agent_max_climb] are treated as solid obstacle footprints (with a correct "inside"); triangles within that band and roughly parallel to the plane (within [member agent_max_slope]) are treated as walkable floor. [member agent_radius] erodes the walkable area as usual.
 			[b]Note:[/b] In flat mode the Recast-specific properties (cell size/height, regions, edges, details, sample partitioning) are ignored. The resulting navigation mesh polygons are flattened onto [member baking_flat_plane].
 		</member>
-		<member name="baking_flat_plane" type="Plane" setter="set_baking_flat_plane" getter="get_baking_flat_plane" default="Plane(0, 1, 0, 0)">
+		<member name="baking_flat_plane" type="Plane" setter="set_baking_flat_plane" getter="get_baking_flat_plane">
 			The plane the navigation mesh is generated on when [member baking_flat_enabled] is [code]true[/code]. The default is the horizontal plane at the world origin with its normal pointing up. The plane is defined in the local space of the source geometry root node.
+		</member>
+		<member name="baking_flat_triangulation_algorithm" type="int" setter="set_baking_flat_triangulation_algorithm" getter="get_baking_flat_triangulation_algorithm" enum="NavigationMesh.FlatTriangulationAlgorithm">
 		</member>
 		<member name="border_size" type="float" setter="set_border_size" getter="get_border_size" default="0.0">
 			The size of the non-navigable border around the bake bounding area.
@@ -209,6 +211,12 @@
 		</constant>
 		<constant name="SOURCE_GEOMETRY_MAX" value="3" enum="SourceGeometryMode">
 			Represents the size of the [enum SourceGeometryMode] enum.
+		</constant>
+		<constant name="FLAT_TRIANGULATION_EAR_CLIPPING" value="0" enum="FlatTriangulationAlgorithm">
+		</constant>
+		<constant name="FLAT_TRIANGULATION_CDT" value="1" enum="FlatTriangulationAlgorithm">
+		</constant>
+		<constant name="FLAT_TRIANGULATION_MAX" value="2" enum="FlatTriangulationAlgorithm">
 		</constant>
 	</constants>
 </class>

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="PhysicsFieldObstacleSegment" inherits="RefCounted" api_type="core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../class.xsd">
+	<brief_description>
+	</brief_description>
+	<description>
+	</description>
+	<tutorials>
+	</tutorials>
+	<members>
+		<member name="inverse_field_transform" type="Transform2D" setter="set_inverse_field_transform" getter="get_inverse_field_transform" default="Transform2D(1, 0, 0, 1, 0, 0)">
+		</member>
+		<member name="shape" type="PhysicsFieldShape" setter="set_shape" getter="get_shape">
+		</member>
+		<member name="transform" type="Transform2D" setter="set_transform" getter="get_transform" default="Transform2D(1, 0, 0, 1, 0, 0)">
+		</member>
+	</members>
+</class>

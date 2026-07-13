@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="Asset" inherits="Object" api_type="core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../class.xsd">
+	<brief_description>
+	</brief_description>
+	<description>
+	</description>
+	<tutorials>
+	</tutorials>
+	<methods>
+		<method name="Instantiate">
+			<return type="Object" />
+			<param index="0" name="script" type="Script" />
+			<description>
+			</description>
+		</method>
+		<method name="get_scene_count_for_script" qualifiers="const">
+			<return type="int" />
+			<param index="0" name="script_path" type="String" />
+			<description>
+			</description>
+		</method>
+		<method name="get_scene_for_script" qualifiers="const">
+			<return type="String" />
+			<param index="0" name="script_path" type="String" />
+			<description>
+			</description>
+		</method>
+	</methods>
+</class>

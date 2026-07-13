@@ -29,6 +29,13 @@
 				Emitted after script validation.
 			</description>
 		</signal>
+		<signal name="find_all_references_requested">
+			<param index="0" name="symbol" type="String" />
+			<param index="1" name="line" type="int" />
+			<param index="2" name="column" type="int" />
+			<description>
+			</description>
+		</signal>
 		<signal name="go_to_help">
 			<param index="0" name="what" type="String" />
 			<description>
