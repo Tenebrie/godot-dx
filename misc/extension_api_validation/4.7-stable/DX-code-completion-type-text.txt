@@ -1,0 +1,12 @@
+DX-code-completion-type-text (d3cafd6123)
+-----------------------------------------
+
+Validate extension JSON: Error: Field 'classes/CodeEdit/methods/add_code_completion_option/arguments': size changed value in new API, from 6 to 8.
+Validate extension JSON: Error: Field 'classes/CodeEdit/methods/add_code_completion_option/arguments': size changed value in new API, from 7 to 8.
+Validate extension JSON: Error: Hash changed for 'classes/CodeEdit/methods/add_code_completion_option', from EB1A746E to 611C3D20. This means that the function has changed and no compatibility function was provided.
+
+Added an optional "type_text" parameter (with an empty String default) to
+CodeEdit.add_code_completion_option to display the completion's type in the
+autocomplete dropdown. As with the earlier optional-parameter additions to this
+method (see GH-75746), the new argument has a default value so existing calls and
+GDExtensions are unaffected; no compatibility method is required.
