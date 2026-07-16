@@ -3054,6 +3054,9 @@ void GDScriptAnalyzer::reduce_assignment(GDScriptParser::AssignmentNode *p_assig
 	} else if (p_assignment->assigned_value->type == GDScriptParser::Node::DICTIONARY && assignee_type.is_hard_type() && assignee_type.has_container_element_types()) {
 		update_dictionary_literal_element_type(static_cast<GDScriptParser::DictionaryNode *>(p_assignment->assigned_value),
 				assignee_type.get_container_element_type_or_variant(0), assignee_type.get_container_element_type_or_variant(1));
+	} else if (p_assignment->assigned_value->type == GDScriptParser::Node::LAMBDA &&
+			assignee_type.builtin_type == Variant::CALLABLE && assignee_type.is_typed_callable) {
+		update_lambda_parameter_types(static_cast<GDScriptParser::LambdaNode *>(p_assignment->assigned_value), assignee_type.callable_arg_types);
 	}
 
 	if (p_assignment->operation == GDScriptParser::AssignmentNode::OP_NONE && assignee_type.is_hard_type() && p_assignment->assigned_value->is_constant) {
