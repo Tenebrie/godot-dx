@@ -1,0 +1,2 @@
+GDTEST_ANALYZER_ERROR
+>> ERROR at line 6: Lambda requires 3 argument(s), but "func(Actor) -> int" only passes 1.

@@ -1,0 +1,2 @@
+GDTEST_ANALYZER_ERROR
+>> ERROR at line 10: Cannot assign a value of type func(int, int) -> String to variable "cb" with specified type func(Actor) -> int.
