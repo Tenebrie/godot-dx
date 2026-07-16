@@ -756,7 +756,9 @@ static String _get_visual_datatype(const PropertyInfo &p_info, bool p_is_arg, co
 	return Variant::get_type_name(p_info.type);
 }
 
-static String _make_arguments_hint(const MethodInfo &p_info, int p_arg_idx, bool p_is_annotation = false) {
+// `p_override_arg_type` replaces the rendered type of argument `p_override_arg_index`. Needed for
+// types a `PropertyInfo` cannot express, such as a typed callable's `func(A) -> R` signature.
+static String _make_arguments_hint(const MethodInfo &p_info, int p_arg_idx, bool p_is_annotation = false, int p_override_arg_index = -1, const String &p_override_arg_type = String()) {
 	String arghint;
 	if (!p_is_annotation) {
 		arghint += _get_visual_datatype(p_info.return_val, false) + " ";
@@ -773,7 +775,7 @@ static String _make_arguments_hint(const MethodInfo &p_info, int p_arg_idx, bool
 		if (i == p_arg_idx) {
 			arghint += String::chr(0xFFFF);
 		}
-		arghint += E.name + ": " + _get_visual_datatype(E, true);
+		arghint += E.name + ": " + (i == p_override_arg_index ? p_override_arg_type : _get_visual_datatype(E, true));
 
 		if (i - def_args >= 0) {
 			arghint += String(" = ") + p_info.default_arguments[i - def_args].get_construct_string();
@@ -3336,11 +3338,29 @@ static void _list_call_arguments(GDScriptParser::CompletionContext &p_context, c
 					return;
 				}
 
+				// Array methods that take an element show the container's element type rather
+				// than the declared `Variant`. Mirrors the signature rewrite in
+				// `GDScriptAnalyzer::get_function_signature()`.
+				int element_arg_index = -1;
+				if (base_type.builtin_type == Variant::ARRAY && base_type.has_container_element_type(0)) {
+					if (method == SNAME("append") || method == SNAME("push_back") || method == SNAME("push_front") ||
+							method == SNAME("find") || method == SNAME("rfind") || method == SNAME("count") ||
+							method == SNAME("has") || method == SNAME("erase") || method == SNAME("fill")) {
+						element_arg_index = 0;
+					} else if (method == SNAME("insert")) {
+						element_arg_index = 1;
+					}
+				}
+
 				List<MethodInfo> methods;
 				base.get_method_list(&methods);
 				for (const MethodInfo &E : methods) {
 					if (E.name == method) {
-						r_arghint = _make_arguments_hint(E, p_argidx);
+						if (element_arg_index >= 0 && element_arg_index < E.arguments.size()) {
+							r_arghint = _make_arguments_hint(E, p_argidx, false, element_arg_index, base_type.get_container_element_type(0).to_string());
+						} else {
+							r_arghint = _make_arguments_hint(E, p_argidx);
+						}
 						return;
 					}
 				}

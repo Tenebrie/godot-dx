@@ -1041,10 +1041,13 @@ void GDScriptAnalyzer::resolve_class_member(GDScriptParser::ClassNode *p_class, 
 
 	Ref<GDScriptParserRef> parser_ref = ensure_cached_external_parser_for_class(p_class, nullptr, "Trying to resolve class member", p_source);
 	Finally finally([&]() {
-		ensure_cached_external_parser_for_class(member.get_datatype().class_type, p_class, "Trying to resolve datatype of class member", p_source);
-		GDScriptParser::DataType member_type = member.get_datatype();
-		for (int i = 0; i < member_type.get_container_element_type_count(); ++i) {
-			ensure_cached_external_parser_for_class(member_type.get_container_element_type(i).class_type, p_class, "Trying to resolve datatype of class member", p_source);
+		ensure_cached_external_parsers_for_type(member.get_datatype(), p_class, "Trying to resolve datatype of class member", p_source);
+		// A function's parameter types are not part of its member datatype, but a caller in
+		// another parser tree still has to resolve them (e.g. to type a lambda passed here).
+		if (member.type == GDScriptParser::ClassNode::Member::FUNCTION && member.function != nullptr) {
+			for (int i = 0; i < member.function->parameters.size(); i++) {
+				ensure_cached_external_parsers_for_type(member.function->parameters[i]->get_datatype(), p_class, "Trying to resolve datatype of class member", p_source);
+			}
 		}
 	});
 
@@ -4340,6 +4343,21 @@ GDScriptParser::DataType GDScriptAnalyzer::make_global_class_meta_type(const Str
 		return ref->get_parser()->head->get_datatype();
 	} else {
 		return make_script_meta_type(ResourceLoader::load(path, "Script"));
+	}
+}
+
+// A class can be named anywhere inside a type, not just at its root: container element types
+// and typed-callable signatures both hold DataTypes that may be owned by another parser tree.
+void GDScriptAnalyzer::ensure_cached_external_parsers_for_type(const GDScriptParser::DataType &p_type, const GDScriptParser::ClassNode *p_from_class, const char *p_context, const GDScriptParser::Node *p_source) {
+	ensure_cached_external_parser_for_class(p_type.class_type, p_from_class, p_context, p_source);
+	for (int i = 0; i < p_type.get_container_element_type_count(); i++) {
+		ensure_cached_external_parsers_for_type(p_type.get_container_element_type(i), p_from_class, p_context, p_source);
+	}
+	for (const GDScriptParser::DataType &arg_type : p_type.callable_arg_types) {
+		ensure_cached_external_parsers_for_type(arg_type, p_from_class, p_context, p_source);
+	}
+	for (const GDScriptParser::DataType &return_type : p_type.callable_return_type) {
+		ensure_cached_external_parsers_for_type(return_type, p_from_class, p_context, p_source);
 	}
 }
 
