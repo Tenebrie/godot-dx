@@ -21,3 +21,10 @@ func test():
 	var two_arg_callable: Callable = two_arg_fn
 	two_arg_callable.call(1, "one")
 	two_arg_callable.call(2, "two", 42, null)
+
+	var zero_arg_lambda := func(): print("zero_arg_lambda")
+	zero_arg_lambda.callv([])
+	zero_arg_lambda.callv([1])
+	zero_arg_lambda.callv([1, "extra"])
+	typed_lambda.callv([4, "extra"])
+	method_callable.callv([300, true])

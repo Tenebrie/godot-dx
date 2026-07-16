@@ -8,3 +8,8 @@ plain_fn 100
 plain_fn 200
 two_arg_fn 1 one
 two_arg_fn 2 two
+zero_arg_lambda
+zero_arg_lambda
+zero_arg_lambda
+typed_lambda 4
+plain_fn 300

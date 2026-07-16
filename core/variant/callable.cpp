@@ -83,6 +83,10 @@ Variant Callable::callv(const Array &p_arguments) const {
 	CallError ce;
 	Variant ret;
 	callp(argptrs, argcount, ret, ce);
+	if (ce.error == CallError::CALL_ERROR_TOO_MANY_ARGUMENTS && ce.expected >= 0 && ce.expected < argcount) {
+		ce.error = CallError::CALL_OK;
+		callp(argptrs, ce.expected, ret, ce);
+	}
 	return ret;
 }
 

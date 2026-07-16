@@ -2164,34 +2164,8 @@ void GDScriptAnalyzer::resolve_assignable(GDScriptParser::AssignableNode *p_assi
 			}
 		} else if (has_specified_type && specified_type.builtin_type == Variant::CALLABLE && specified_type.is_typed_callable &&
 				p_assignable->initializer->type == GDScriptParser::Node::LAMBDA) {
-			// Case B: propagate the LHS-declared parameter types into the lambda's untyped
-			// parameters before its body is resolved (bodies run in resolve_pending_lambda_bodies()
-			// called from resolve_suite after this function returns). Mirrors signal.connect().
-			GDScriptParser::LambdaNode *lambda = static_cast<GDScriptParser::LambdaNode *>(p_assignable->initializer);
-			if (lambda->function != nullptr) {
-				int arg_count = MIN(lambda->function->parameters.size(), specified_type.callable_arg_types.size());
-				bool any_updated = false;
-				for (int i = 0; i < arg_count; i++) {
-					GDScriptParser::ParameterNode *param = lambda->function->parameters[i];
-					if (param->datatype_specifier == nullptr && param->get_datatype().is_variant()) {
-						GDScriptParser::DataType inferred = specified_type.callable_arg_types[i];
-						inferred.type_source = GDScriptParser::DataType::ANNOTATED_INFERRED;
-						inferred.is_constant = false;
-						param->set_datatype(inferred);
-						any_updated = true;
-					}
-				}
-				// Keep FunctionNode.info in sync so downstream reads of the lambda's
-				// signature (e.g. `.call()` type-check on the lambda directly) see
-				// the inferred parameter types.
-				if (any_updated) {
-					for (int i = 0; i < arg_count; i++) {
-						lambda->function->info.arguments.write[i] =
-								lambda->function->parameters[i]->get_datatype().to_property_info(
-										lambda->function->parameters[i]->identifier->name);
-					}
-				}
-			}
+			// Case B: propagate the LHS-declared parameter types into the lambda's untyped parameters.
+			update_lambda_parameter_types(static_cast<GDScriptParser::LambdaNode *>(p_assignable->initializer), specified_type.callable_arg_types);
 		}
 
 		if (is_constant && !p_assignable->initializer->is_constant) {
@@ -2947,6 +2921,40 @@ void GDScriptAnalyzer::update_dictionary_literal_element_type(GDScriptParser::Di
 	p_dictionary->set_datatype(dictionary_type);
 }
 
+// Positionally propagates known parameter types into a lambda's untyped parameters. Positions
+// with an unset incoming type, and parameters carrying an explicit annotation, are left alone.
+// Callers must run this before the lambda's body is resolved, which happens later via
+// `pending_body_resolution_lambdas`, so that the body is analyzed with the inferred types.
+void GDScriptAnalyzer::update_lambda_parameter_types(GDScriptParser::LambdaNode *p_lambda, const Vector<GDScriptParser::DataType> &p_param_types) {
+	if (p_lambda->function == nullptr) {
+		return;
+	}
+
+	const int count = MIN(p_lambda->function->parameters.size(), p_param_types.size());
+	bool any_updated = false;
+	for (int i = 0; i < count; i++) {
+		if (!p_param_types[i].is_set()) {
+			continue;
+		}
+		GDScriptParser::ParameterNode *param = p_lambda->function->parameters[i];
+		if (param->datatype_specifier != nullptr || !param->get_datatype().is_variant()) {
+			continue;
+		}
+		GDScriptParser::DataType inferred = p_param_types[i];
+		inferred.type_source = GDScriptParser::DataType::ANNOTATED_INFERRED;
+		inferred.is_constant = false;
+		param->set_datatype(inferred);
+		any_updated = true;
+	}
+
+	if (any_updated) {
+		for (int i = 0; i < p_lambda->function->parameters.size(); i++) {
+			const GDScriptParser::ParameterNode *param = p_lambda->function->parameters[i];
+			p_lambda->function->info.arguments.write[i] = param->get_datatype().to_property_info(param->identifier->name);
+		}
+	}
+}
+
 void GDScriptAnalyzer::reduce_assignment(GDScriptParser::AssignmentNode *p_assignment) {
 	reduce_expression(p_assignment->assigned_value);
 
@@ -3332,12 +3340,15 @@ void GDScriptAnalyzer::reduce_call(GDScriptParser::CallNode *p_call, bool p_is_a
 	bool all_is_constant = true;
 	HashMap<int, GDScriptParser::ArrayNode *> arrays; // For array literal to potentially type when passing.
 	HashMap<int, GDScriptParser::DictionaryNode *> dictionaries; // Same, but for dictionaries.
+	HashMap<int, GDScriptParser::LambdaNode *> lambdas; // Same, but for lambda parameters.
 	for (int i = 0; i < p_call->arguments.size(); i++) {
 		reduce_expression(p_call->arguments[i]);
 		if (p_call->arguments[i]->type == GDScriptParser::Node::ARRAY) {
 			arrays[i] = static_cast<GDScriptParser::ArrayNode *>(p_call->arguments[i]);
 		} else if (p_call->arguments[i]->type == GDScriptParser::Node::DICTIONARY) {
 			dictionaries[i] = static_cast<GDScriptParser::DictionaryNode *>(p_call->arguments[i]);
+		} else if (p_call->arguments[i]->type == GDScriptParser::Node::LAMBDA) {
+			lambdas[i] = static_cast<GDScriptParser::LambdaNode *>(p_call->arguments[i]);
 		}
 		all_is_constant = all_is_constant && p_call->arguments[i]->is_constant;
 	}
@@ -3749,6 +3760,15 @@ void GDScriptAnalyzer::reduce_call(GDScriptParser::CallNode *p_call, bool p_is_a
 			}
 		}
 
+		// If the function declares a typed callable parameter, a lambda literal passed there
+		// takes its parameter types from that declared signature.
+		for (const KeyValue<int, GDScriptParser::LambdaNode *> &E : lambdas) {
+			int index = E.key;
+			if (index < par_types.size() && par_types.get(index).is_hard_type() && par_types.get(index).is_typed_callable) {
+				update_lambda_parameter_types(E.value, par_types.get(index).callable_arg_types);
+			}
+		}
+
 		// Infer lambda parameter types from typed Array method callbacks.
 		// Lambda bodies are resolved later (pending_body_resolution_lambdas), so updating
 		// parameter types here ensures the body will be analyzed with correct types.
@@ -3778,23 +3798,13 @@ void GDScriptAnalyzer::reduce_call(GDScriptParser::CallNode *p_call, bool p_is_a
 				element_param_end = 1;
 			}
 
-			if (callable_arg_index >= 0 && callable_arg_index < p_call->arguments.size()) {
-				GDScriptParser::ExpressionNode *arg = p_call->arguments[callable_arg_index];
-				if (arg->type == GDScriptParser::Node::LAMBDA) {
-					GDScriptParser::LambdaNode *lambda = static_cast<GDScriptParser::LambdaNode *>(arg);
-					if (lambda->function != nullptr) {
-						for (int i = element_param_start; i <= element_param_end && i < lambda->function->parameters.size(); i++) {
-							GDScriptParser::ParameterNode *param = lambda->function->parameters[i];
-							// Only override if the parameter has no explicit type annotation.
-							if (param->datatype_specifier == nullptr && param->get_datatype().is_variant()) {
-								GDScriptParser::DataType inferred = element_type;
-								inferred.type_source = GDScriptParser::DataType::ANNOTATED_INFERRED;
-								inferred.is_constant = false;
-								param->set_datatype(inferred);
-							}
-						}
-					}
+			if (callable_arg_index >= 0 && lambdas.has(callable_arg_index)) {
+				Vector<GDScriptParser::DataType> param_types;
+				param_types.resize(element_param_end + 1);
+				for (int i = element_param_start; i <= element_param_end; i++) {
+					param_types.write[i] = element_type;
 				}
+				update_lambda_parameter_types(lambdas[callable_arg_index], param_types);
 			}
 		}
 
@@ -3876,22 +3886,8 @@ void GDScriptAnalyzer::reduce_call(GDScriptParser::CallNode *p_call, bool p_is_a
 		if (base_type.kind == GDScriptParser::DataType::BUILTIN && base_type.builtin_type == Variant::SIGNAL &&
 				p_call->function_name == SNAME("connect")) {
 			Vector<GDScriptParser::DataType> signal_params = get_signal_param_types(base_type, get_signal_owner_class());
-			if (signal_params.size() > 0 && p_call->arguments.size() > 0) {
-				GDScriptParser::ExpressionNode *arg = p_call->arguments[0];
-				if (arg->type == GDScriptParser::Node::LAMBDA) {
-					GDScriptParser::LambdaNode *lambda = static_cast<GDScriptParser::LambdaNode *>(arg);
-					if (lambda->function != nullptr) {
-						for (int i = 0; i < lambda->function->parameters.size() && i < signal_params.size(); i++) {
-							GDScriptParser::ParameterNode *param = lambda->function->parameters[i];
-							if (param->datatype_specifier == nullptr && param->get_datatype().is_variant()) {
-								GDScriptParser::DataType inferred = signal_params[i];
-								inferred.type_source = GDScriptParser::DataType::ANNOTATED_INFERRED;
-								inferred.is_constant = false;
-								param->set_datatype(inferred);
-							}
-						}
-					}
-				}
+			if (signal_params.size() > 0 && lambdas.has(0)) {
+				update_lambda_parameter_types(lambdas[0], signal_params);
 			}
 		}
 

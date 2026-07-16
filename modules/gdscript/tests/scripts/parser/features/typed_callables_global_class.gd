@@ -9,6 +9,10 @@ func _threat(actor: TypedCallableGlobalActor) -> int:
 	return actor.actor_name.length()
 
 
+func _apply(actor: TypedCallableGlobalActor, f: func(TypedCallableGlobalActor) -> int) -> int:
+	return f.call(actor)
+
+
 func test():
 	# Case A path — typed callable inferred from a fully typed lambda.
 	var selector := func(actor: TypedCallableGlobalActor) -> int:
@@ -25,3 +29,9 @@ func test():
 	var selector3: func(TypedCallableGlobalActor) -> int = func(actor):
 		return actor.actor_name.length() * 2
 	print(selector3.call(a))
+
+	# Call-argument path — untyped lambda param inferred from the declared
+	# parameter of the function it is passed to.
+	print(_apply(a, func(actor):
+		return actor.actor_name.length() + 1
+	))
