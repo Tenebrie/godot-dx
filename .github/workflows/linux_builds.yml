@@ -46,6 +46,12 @@ jobs:
             godot-cpp: true
             clangd-tidy: true
 
+          - name: Editor (target=editor)
+            cache-name: linux-editor
+            target: editor
+            bin: ./bin/godot.linuxbsd.editor.x86_64
+            artifact: true
+
           - name: Editor with doubles and GCC sanitizers (target=editor, dev_build=yes, scu_build=yes, precision=double, use_asan=yes, use_ubsan=yes, linker=mold)
             cache-name: linux-editor-double-sanitizers
             target: editor
