@@ -6414,7 +6414,7 @@ bool GDScriptAnalyzer::get_function_signature(GDScriptParser::Node *p_source, bo
 					const GDScriptParser::DataType &element_type = p_base_type.get_container_element_type(0);
 
 					// Methods that return Array with the same element type.
-					if (p_function == SNAME("filter") || p_function == SNAME("duplicate") || p_function == SNAME("slice")) {
+					if (p_function == SNAME("filter") || p_function == SNAME("duplicate") || p_function == SNAME("duplicate_deep") || p_function == SNAME("slice")) {
 						r_return_type.set_container_element_type(0, element_type);
 					}
 
@@ -6429,7 +6429,8 @@ bool GDScriptAnalyzer::get_function_signature(GDScriptParser::Node *p_source, bo
 					// Methods whose first parameter is an element (Variant -> element type).
 					if (p_function == SNAME("append") || p_function == SNAME("push_back") || p_function == SNAME("push_front") ||
 							p_function == SNAME("find") || p_function == SNAME("rfind") || p_function == SNAME("count") ||
-							p_function == SNAME("has") || p_function == SNAME("erase") || p_function == SNAME("fill")) {
+							p_function == SNAME("has") || p_function == SNAME("erase") || p_function == SNAME("fill") ||
+							p_function == SNAME("bsearch") || p_function == SNAME("bsearch_custom")) {
 						if (!r_par_types.is_empty()) {
 							*r_par_types.begin() = element_type;
 						}
@@ -6443,6 +6444,77 @@ bool GDScriptAnalyzer::get_function_signature(GDScriptParser::Node *p_source, bo
 							if (it != r_par_types.end()) {
 								*it = element_type;
 							}
+						}
+					}
+				}
+
+				// Propagate container key/value types for Dictionary methods whose signature depends on them.
+				if (p_base_type.builtin_type == Variant::DICTIONARY) {
+					if (p_base_type.has_container_element_type(0)) {
+						const GDScriptParser::DataType &key_type = p_base_type.get_container_element_type(0);
+
+						// Methods that return a key (Variant -> key type).
+						if (p_function == SNAME("find_key")) {
+							r_return_type = key_type;
+							r_return_type.is_constant = false;
+						}
+
+						// `keys()` returns an Array of keys.
+						if (p_function == SNAME("keys")) {
+							r_return_type.set_container_element_type(0, key_type);
+						}
+
+						// Methods whose first parameter is a key (Variant -> key type).
+						if (p_function == SNAME("get") || p_function == SNAME("get_or_add") || p_function == SNAME("set") ||
+								p_function == SNAME("has") || p_function == SNAME("erase")) {
+							if (!r_par_types.is_empty()) {
+								*r_par_types.begin() = key_type;
+							}
+						}
+					}
+
+					if (p_base_type.has_container_element_type(1)) {
+						const GDScriptParser::DataType &value_type = p_base_type.get_container_element_type(1);
+
+						// Methods that return a value (Variant -> value type).
+						if (p_function == SNAME("get") || p_function == SNAME("get_or_add")) {
+							r_return_type = value_type;
+							r_return_type.is_constant = false;
+						}
+
+						// `values()` returns an Array of values.
+						if (p_function == SNAME("values")) {
+							r_return_type.set_container_element_type(0, value_type);
+						}
+
+						// `find_key(value)`: first parameter is a value.
+						if (p_function == SNAME("find_key")) {
+							if (!r_par_types.is_empty()) {
+								*r_par_types.begin() = value_type;
+							}
+						}
+
+						// `set(key, value)` and `get_or_add(key, default)`: second parameter is a value.
+						// `get(key, default)` is deliberately excluded: its default is never inserted,
+						// so a sentinel of another type is valid.
+						if (p_function == SNAME("set") || p_function == SNAME("get_or_add")) {
+							List<GDScriptParser::DataType>::Iterator it = r_par_types.begin();
+							if (it != r_par_types.end()) {
+								++it;
+								if (it != r_par_types.end()) {
+									*it = value_type;
+								}
+							}
+						}
+					}
+
+					// Methods that return a Dictionary with the same key/value types.
+					if (p_function == SNAME("duplicate") || p_function == SNAME("duplicate_deep") || p_function == SNAME("merged")) {
+						if (p_base_type.has_container_element_type(0)) {
+							r_return_type.set_container_element_type(0, p_base_type.get_container_element_type(0));
+						}
+						if (p_base_type.has_container_element_type(1)) {
+							r_return_type.set_container_element_type(1, p_base_type.get_container_element_type(1));
 						}
 					}
 				}

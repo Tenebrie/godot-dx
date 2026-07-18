@@ -758,10 +758,10 @@ static String _get_visual_datatype(const PropertyInfo &p_info, bool p_is_arg, co
 
 // `p_override_arg_type` replaces the rendered type of argument `p_override_arg_index`. Needed for
 // types a `PropertyInfo` cannot express, such as a typed callable's `func(A) -> R` signature.
-static String _make_arguments_hint(const MethodInfo &p_info, int p_arg_idx, bool p_is_annotation = false, int p_override_arg_index = -1, const String &p_override_arg_type = String()) {
+static String _make_arguments_hint(const MethodInfo &p_info, int p_arg_idx, bool p_is_annotation = false, const HashMap<int, String> &p_override_arg_types = HashMap<int, String>(), const String &p_override_return_type = String()) {
 	String arghint;
 	if (!p_is_annotation) {
-		arghint += _get_visual_datatype(p_info.return_val, false) + " ";
+		arghint += (p_override_return_type.is_empty() ? _get_visual_datatype(p_info.return_val, false) : p_override_return_type) + " ";
 	}
 	arghint += p_info.name + "(";
 
@@ -775,7 +775,8 @@ static String _make_arguments_hint(const MethodInfo &p_info, int p_arg_idx, bool
 		if (i == p_arg_idx) {
 			arghint += String::chr(0xFFFF);
 		}
-		arghint += E.name + ": " + (i == p_override_arg_index ? p_override_arg_type : _get_visual_datatype(E, true));
+		const String *override_arg_type = p_override_arg_types.getptr(i);
+		arghint += E.name + ": " + (override_arg_type != nullptr ? *override_arg_type : _get_visual_datatype(E, true));
 
 		if (i - def_args >= 0) {
 			arghint += String(" = ") + p_info.default_arguments[i - def_args].get_construct_string();
@@ -1219,6 +1220,75 @@ static String _get_method_return_type_text(const MethodInfo &p_info) {
 	return _get_type_text(p_info.return_val);
 }
 
+// Return-type text for typed container methods whose declared `Variant`/untyped return
+// actually depends on the container's element types. Mirrors the signature rewrite in
+// `GDScriptAnalyzer::get_function_signature()`. Empty string if not applicable.
+static String _get_container_method_return_type_text(const GDScriptParser::DataType &p_base_type, const StringName &p_method) {
+	if (p_base_type.builtin_type == Variant::ARRAY && p_base_type.has_container_element_type(0)) {
+		if (p_method == SNAME("front") || p_method == SNAME("back") || p_method == SNAME("pick_random") ||
+				p_method == SNAME("pop_back") || p_method == SNAME("pop_front") || p_method == SNAME("pop_at") ||
+				p_method == SNAME("min") || p_method == SNAME("max")) {
+			return p_base_type.get_container_element_type(0).to_string();
+		}
+		if (p_method == SNAME("filter") || p_method == SNAME("duplicate") || p_method == SNAME("duplicate_deep") || p_method == SNAME("slice")) {
+			return p_base_type.to_string();
+		}
+	} else if (p_base_type.builtin_type == Variant::DICTIONARY) {
+		if (p_base_type.has_container_element_type(1) && (p_method == SNAME("get") || p_method == SNAME("get_or_add"))) {
+			return p_base_type.get_container_element_type(1).to_string();
+		}
+		if (p_base_type.has_container_element_type(0) && p_method == SNAME("find_key")) {
+			return p_base_type.get_container_element_type(0).to_string();
+		}
+		if (p_base_type.has_container_element_type(0) && p_method == SNAME("keys")) {
+			return "Array[" + p_base_type.get_container_element_type(0).to_string() + "]";
+		}
+		if (p_base_type.has_container_element_type(1) && p_method == SNAME("values")) {
+			return "Array[" + p_base_type.get_container_element_type(1).to_string() + "]";
+		}
+		if (p_base_type.has_container_element_types() && (p_method == SNAME("duplicate") || p_method == SNAME("duplicate_deep") || p_method == SNAME("merged"))) {
+			return p_base_type.to_string();
+		}
+	}
+	return String();
+}
+
+// Argument-type text overrides (by argument index) for typed container methods whose declared
+// `Variant` parameters actually depend on the container's element types. Mirrors the signature
+// rewrite in `GDScriptAnalyzer::get_function_signature()`.
+static HashMap<int, String> _get_container_method_arg_type_overrides(const GDScriptParser::DataType &p_base_type, const StringName &p_method) {
+	HashMap<int, String> override_arg_types;
+	if (p_base_type.builtin_type == Variant::ARRAY && p_base_type.has_container_element_type(0)) {
+		const String element_type_name = p_base_type.get_container_element_type(0).to_string();
+		if (p_method == SNAME("append") || p_method == SNAME("push_back") || p_method == SNAME("push_front") ||
+				p_method == SNAME("find") || p_method == SNAME("rfind") || p_method == SNAME("count") ||
+				p_method == SNAME("has") || p_method == SNAME("erase") || p_method == SNAME("fill") ||
+				p_method == SNAME("bsearch") || p_method == SNAME("bsearch_custom")) {
+			override_arg_types[0] = element_type_name;
+		} else if (p_method == SNAME("insert")) {
+			override_arg_types[1] = element_type_name;
+		}
+	} else if (p_base_type.builtin_type == Variant::DICTIONARY) {
+		if (p_base_type.has_container_element_type(0)) {
+			const String key_type_name = p_base_type.get_container_element_type(0).to_string();
+			if (p_method == SNAME("get") || p_method == SNAME("get_or_add") || p_method == SNAME("set") ||
+					p_method == SNAME("has") || p_method == SNAME("erase")) {
+				override_arg_types[0] = key_type_name;
+			}
+		}
+		if (p_base_type.has_container_element_type(1)) {
+			const String value_type_name = p_base_type.get_container_element_type(1).to_string();
+			if (p_method == SNAME("set") || p_method == SNAME("get_or_add")) {
+				override_arg_types[1] = value_type_name;
+			}
+			if (p_method == SNAME("find_key")) {
+				override_arg_types[0] = value_type_name;
+			}
+		}
+	}
+	return override_arg_types;
+}
+
 static void _find_identifiers_in_suite(const GDScriptParser::SuiteNode *p_suite, HashMap<String, ScriptLanguage::CodeCompletionOption> &r_result, int p_recursion_depth = 0) {
 	for (int i = 0; i < p_suite->locals.size(); i++) {
 		ScriptLanguage::CodeCompletionOption option;
@@ -1637,7 +1707,8 @@ static void _find_identifiers_in_base(const GDScriptCompletionIdentifier &p_base
 							option.display += "()";
 						}
 					}
-					option.type_text = _get_method_return_type_text(E);
+					const String container_return_type_text = _get_container_method_return_type_text(base_type, E_orig.name);
+					option.type_text = container_return_type_text.is_empty() ? _get_method_return_type_text(E) : container_return_type_text;
 					r_result.insert(option.display, option);
 				}
 
@@ -2158,10 +2229,53 @@ static bool _guess_expression_type(GDScriptParser::CompletionContext &p_context,
 					}
 
 					// Simulate generics for some typed array methods.
-					if (base.type.builtin_type == Variant::ARRAY && base.type.has_container_element_types() && (call->function_name == SNAME("back") || call->function_name == SNAME("front") || call->function_name == SNAME("get") || call->function_name == SNAME("max") || call->function_name == SNAME("min") || call->function_name == SNAME("pick_random") || call->function_name == SNAME("pop_at") || call->function_name == SNAME("pop_back") || call->function_name == SNAME("pop_front"))) {
-						r_type.type = base.type.get_container_element_type(0);
-						found = true;
-						break;
+					if (base.type.builtin_type == Variant::ARRAY && base.type.has_container_element_types()) {
+						if (call->function_name == SNAME("back") || call->function_name == SNAME("front") || call->function_name == SNAME("get") || call->function_name == SNAME("max") || call->function_name == SNAME("min") || call->function_name == SNAME("pick_random") || call->function_name == SNAME("pop_at") || call->function_name == SNAME("pop_back") || call->function_name == SNAME("pop_front")) {
+							r_type.type = base.type.get_container_element_type(0);
+							found = true;
+							break;
+						}
+						// Methods that return an Array with the same element type.
+						if (call->function_name == SNAME("filter") || call->function_name == SNAME("duplicate") || call->function_name == SNAME("duplicate_deep") || call->function_name == SNAME("slice")) {
+							r_type.type = base.type;
+							r_type.type.is_constant = false;
+							found = true;
+							break;
+						}
+					}
+
+					// Simulate generics for some typed dictionary methods.
+					if (base.type.builtin_type == Variant::DICTIONARY && base.type.has_container_element_types()) {
+						if (base.type.has_container_element_type(1) && (call->function_name == SNAME("get") || call->function_name == SNAME("get_or_add"))) {
+							r_type.type = base.type.get_container_element_type(1);
+							found = true;
+							break;
+						}
+						if (base.type.has_container_element_type(0) && call->function_name == SNAME("find_key")) {
+							r_type.type = base.type.get_container_element_type(0);
+							found = true;
+							break;
+						}
+						if (call->function_name == SNAME("keys") || call->function_name == SNAME("values")) {
+							const int element_index = call->function_name == SNAME("keys") ? 0 : 1;
+							if (base.type.has_container_element_type(element_index)) {
+								GDScriptParser::DataType array_type;
+								array_type.type_source = GDScriptParser::DataType::ANNOTATED_EXPLICIT;
+								array_type.kind = GDScriptParser::DataType::BUILTIN;
+								array_type.builtin_type = Variant::ARRAY;
+								array_type.set_container_element_type(0, base.type.get_container_element_type(element_index));
+								r_type.type = array_type;
+								found = true;
+								break;
+							}
+						}
+						// Methods that return a Dictionary with the same key/value types.
+						if (call->function_name == SNAME("duplicate") || call->function_name == SNAME("duplicate_deep") || call->function_name == SNAME("merged")) {
+							r_type.type = base.type;
+							r_type.type.is_constant = false;
+							found = true;
+							break;
+						}
 					}
 
 					// Insert example values for functions which a structured dictionary response.
@@ -2542,6 +2656,12 @@ static bool _guess_identifier_type(GDScriptParser::CompletionContext &p_context,
 				r_type.assigned_expression = last_assigned_expression;
 			} else {
 				r_type = assigned_type;
+				// A typed container annotation is more informative than an untyped assigned value
+				// (e.g. `var d: Dictionary[String, int] = {}` where the literal guesses as plain `Dictionary`).
+				if (id_type.type.is_hard_type() && id_type.type.kind == GDScriptParser::DataType::BUILTIN && id_type.type.has_container_element_types() &&
+						assigned_type.type.kind == GDScriptParser::DataType::BUILTIN && assigned_type.type.builtin_type == id_type.type.builtin_type && !assigned_type.type.has_container_element_types()) {
+					r_type.type = id_type.type;
+				}
 			}
 			return true;
 		}
@@ -3338,29 +3458,15 @@ static void _list_call_arguments(GDScriptParser::CompletionContext &p_context, c
 					return;
 				}
 
-				// Array methods that take an element show the container's element type rather
-				// than the declared `Variant`. Mirrors the signature rewrite in
-				// `GDScriptAnalyzer::get_function_signature()`.
-				int element_arg_index = -1;
-				if (base_type.builtin_type == Variant::ARRAY && base_type.has_container_element_type(0)) {
-					if (method == SNAME("append") || method == SNAME("push_back") || method == SNAME("push_front") ||
-							method == SNAME("find") || method == SNAME("rfind") || method == SNAME("count") ||
-							method == SNAME("has") || method == SNAME("erase") || method == SNAME("fill")) {
-						element_arg_index = 0;
-					} else if (method == SNAME("insert")) {
-						element_arg_index = 1;
-					}
-				}
+				// Container methods that take an element/key/value show the container's
+				// types rather than the declared `Variant`.
+				const HashMap<int, String> override_arg_types = _get_container_method_arg_type_overrides(base_type, method);
 
 				List<MethodInfo> methods;
 				base.get_method_list(&methods);
 				for (const MethodInfo &E : methods) {
 					if (E.name == method) {
-						if (element_arg_index >= 0 && element_arg_index < E.arguments.size()) {
-							r_arghint = _make_arguments_hint(E, p_argidx, false, element_arg_index, base_type.get_container_element_type(0).to_string());
-						} else {
-							r_arghint = _make_arguments_hint(E, p_argidx);
-						}
+						r_arghint = _make_arguments_hint(E, p_argidx, false, override_arg_types, _get_container_method_return_type_text(base_type, method));
 						return;
 					}
 				}
@@ -4395,6 +4501,20 @@ static Error _lookup_symbol_from_base(const GDScriptParser::DataType &p_base, co
 					r_result.type = ScriptLanguage::LOOKUP_RESULT_CLASS_METHOD;
 					r_result.class_name = Variant::get_type_name(base_type.builtin_type);
 					r_result.class_member = p_symbol;
+					// Typed containers: expose the element-dependent signature so documentation
+					// tooltips can show e.g. `Node3D pop_back()` instead of `Variant pop_back()`.
+					r_result.method_return_type_override = _get_container_method_return_type_text(base_type, p_symbol);
+					const HashMap<int, String> arg_type_overrides = _get_container_method_arg_type_overrides(base_type, p_symbol);
+					if (!arg_type_overrides.is_empty()) {
+						int max_arg_index = -1;
+						for (const KeyValue<int, String> &E : arg_type_overrides) {
+							max_arg_index = MAX(max_arg_index, E.key);
+						}
+						r_result.method_arg_type_overrides.resize(max_arg_index + 1);
+						for (const KeyValue<int, String> &E : arg_type_overrides) {
+							r_result.method_arg_type_overrides.set(E.key, E.value);
+						}
+					}
 					return OK;
 				}
 

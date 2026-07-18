@@ -1412,6 +1412,17 @@ void ScriptTextEditor::_show_symbol_tooltip(const String &p_symbol, int p_row, i
 					cname = ClassDB::get_parent_class(cname);
 				}
 				doc_symbol = "method|" + result.class_name + "|" + result.class_member;
+				// Display-only signature overrides (e.g. typed container methods).
+				if (!result.method_return_type_override.is_empty() || !result.method_arg_type_overrides.is_empty()) {
+					Dictionary item_data;
+					if (!result.method_return_type_override.is_empty()) {
+						item_data["return_type"] = result.method_return_type_override;
+					}
+					if (!result.method_arg_type_overrides.is_empty()) {
+						item_data["arg_types"] = result.method_arg_type_overrides;
+					}
+					doc_symbol += "|" + JSON::stringify(item_data);
+				}
 			} break;
 			case ScriptLanguage::LOOKUP_RESULT_CLASS_SIGNAL: {
 				StringName cname = result.class_name;

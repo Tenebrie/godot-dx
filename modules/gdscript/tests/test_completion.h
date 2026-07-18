@@ -60,6 +60,9 @@ static bool match_option(const Dictionary p_expected, const ScriptLanguage::Code
 	if (p_expected.get("insert_text", p_got.insert_text) != p_got.insert_text) {
 		return false;
 	}
+	if (p_expected.get("type_text", p_got.type_text) != p_got.type_text) {
+		return false;
+	}
 	if (p_expected.get("kind", p_got.kind) != Variant(p_got.kind)) {
 		return false;
 	}

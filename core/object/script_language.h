@@ -407,6 +407,12 @@ public:
 		// For `LOCAL_*`.
 		String value;
 
+		// For `CLASS_METHOD`: display-only signature overrides for methods whose declared
+		// `Variant` types depend on the base's container element types (e.g. `pop_back` on
+		// `Array[Node3D]` returns `Node3D`). Empty means no override.
+		String method_return_type_override;
+		PackedStringArray method_arg_type_overrides; // Per-argument; empty entries keep the documented type.
+
 		// `SCRIPT_LOCATION` and `LOCAL_*` must have, `CLASS_*` can have.
 		Ref<Script> script;
 		String script_path;

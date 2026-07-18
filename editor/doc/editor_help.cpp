@@ -4742,6 +4742,21 @@ void EditorHelpBit::parse_symbol(const String &p_symbol, const String &p_prologu
 		symbol_type = TTR("Method");
 		symbol_hint = SYMBOL_HINT_SIGNATURE;
 		help_data = _get_method_help_data(class_name, item_name);
+		// Display-only signature overrides (e.g. typed container methods like `Array[Node3D].pop_back()`).
+		const String return_type_override = item_data.get("return_type", String());
+		if (!return_type_override.is_empty()) {
+			help_data.doc_type.type = return_type_override;
+			help_data.doc_type.enumeration = String();
+			help_data.doc_type.is_bitfield = false;
+		}
+		const PackedStringArray arg_type_overrides = item_data.get("arg_types", PackedStringArray());
+		for (int i = 0; i < arg_type_overrides.size() && i < help_data.arguments.size(); i++) {
+			if (!arg_type_overrides[i].is_empty()) {
+				help_data.arguments.write[i].doc_type.type = arg_type_overrides[i];
+				help_data.arguments.write[i].doc_type.enumeration = String();
+				help_data.arguments.write[i].doc_type.is_bitfield = false;
+			}
+		}
 	} else if (item_type == "signal") {
 		symbol_doc_link = vformat("@signal %s.%s", class_name, item_name);
 		symbol_type = TTR("Signal");
