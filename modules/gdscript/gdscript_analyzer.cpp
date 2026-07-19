@@ -127,6 +127,25 @@ static GDScriptParser::DataType make_signal_type(const MethodInfo &p_info) {
 	return type;
 }
 
+// Signature type for a typed container method callback, e.g. `func(E) -> bool` for `Array[E].filter()`.
+static GDScriptParser::DataType make_container_callback_type(const Vector<GDScriptParser::DataType> &p_arg_types, const GDScriptParser::DataType &p_return_type) {
+	GDScriptParser::DataType type;
+	type.type_source = GDScriptParser::DataType::ANNOTATED_EXPLICIT;
+	type.kind = GDScriptParser::DataType::BUILTIN;
+	type.builtin_type = Variant::CALLABLE;
+	type.is_typed_callable = true;
+	for (const GDScriptParser::DataType &arg_type : p_arg_types) {
+		GDScriptParser::DataType arg = arg_type;
+		arg.is_constant = false;
+		type.callable_arg_types.push_back(arg);
+		type.method_info.arguments.push_back(arg.to_property_info(String()));
+	}
+	GDScriptParser::DataType return_type = p_return_type;
+	return_type.is_constant = false;
+	type.callable_return_type.push_back(return_type);
+	return type;
+}
+
 static GDScriptParser::DataType make_native_meta_type(const StringName &p_class_name) {
 	GDScriptParser::DataType type;
 	type.type_source = GDScriptParser::DataType::ANNOTATED_EXPLICIT;
@@ -2212,8 +2231,12 @@ void GDScriptAnalyzer::resolve_assignable(GDScriptParser::AssignableNode *p_assi
 
 		if (p_assignable->infer_datatype) {
 			if (!initializer_type.is_set() || initializer_type.has_no_type() || !initializer_type.is_hard_type()) {
-				if (GDScriptParser::infer_type_from_assignment && !p_assignable->datatype_specifier) {
-					// Setting-driven inference: gracefully fall back to untyped instead of erroring.
+				const bool weak_but_known = initializer_type.is_set() && !initializer_type.has_no_type() && !initializer_type.is_variant();
+				if ((GDScriptParser::infer_type_from_assignment || weak_but_known) && !p_assignable->datatype_specifier) {
+					// A weak but known type (e.g. an `Array.map()` result) propagates weakly instead
+					// of erroring — the declaration gets the type for hints but no enforcement.
+					// Truly unknown types (unresolved, weak Variant) only fall back when the
+					// `infer_type_from_assignment` setting asks for it.
 					p_assignable->infer_datatype = false;
 				} else {
 					push_error(vformat(R"(Cannot infer the type of "%s" %s because the value doesn't have a set type.)", p_assignable->identifier->name, p_kind), p_assignable->initializer);
@@ -2981,6 +3004,34 @@ void GDScriptAnalyzer::update_lambda_parameter_types(GDScriptParser::LambdaNode 
 		for (int i = 0; i < p_lambda->function->parameters.size(); i++) {
 			const GDScriptParser::ParameterNode *param = p_lambda->function->parameters[i];
 			p_lambda->function->info.arguments.write[i] = param->get_datatype().to_property_info(param->identifier->name);
+		}
+
+		// If every parameter now has a hard type and the return type is declared, promote the
+		// lambda to a typed callable — mirrors Case A in `reduce_lambda()` so callable-derived
+		// typing (e.g. `Array.map()` results) also applies to lambdas with inferred parameters.
+		GDScriptParser::FunctionNode *fn = p_lambda->function;
+		bool has_full_signature = fn->return_type != nullptr && !fn->is_vararg();
+		for (int i = 0; has_full_signature && i < fn->parameters.size(); i++) {
+			if (!fn->parameters[i]->get_datatype().is_hard_type()) {
+				has_full_signature = false;
+			}
+		}
+		if (has_full_signature) {
+			GDScriptParser::DataType lambda_type = p_lambda->get_datatype();
+			lambda_type.method_info = fn->info;
+			lambda_type.callable_arg_types.clear();
+			lambda_type.callable_return_type.clear();
+			for (int i = 0; i < fn->parameters.size(); i++) {
+				GDScriptParser::DataType pt = fn->parameters[i]->get_datatype();
+				pt.is_constant = false;
+				lambda_type.callable_arg_types.push_back(pt);
+			}
+			GDScriptParser::DataType ret = fn->get_datatype();
+			ret.is_constant = false;
+			ret.is_coroutine = fn->is_coroutine;
+			lambda_type.callable_return_type.push_back(ret);
+			lambda_type.is_typed_callable = true;
+			p_lambda->set_datatype(lambda_type);
 		}
 	}
 }
@@ -3858,44 +3909,9 @@ void GDScriptAnalyzer::reduce_call(GDScriptParser::CallNode *p_call, bool p_is_a
 			update_lambdas_from_typed_callable(p_call->arguments[i], par_types.get(i));
 		}
 
-		// Infer lambda parameter types from typed Array method callbacks.
-		// Lambda bodies are resolved later (pending_body_resolution_lambdas), so updating
-		// parameter types here ensures the body will be analyzed with correct types.
-		if (base_type.kind == GDScriptParser::DataType::BUILTIN && base_type.builtin_type == Variant::ARRAY && base_type.has_container_element_type(0)) {
-			const GDScriptParser::DataType &element_type = base_type.get_container_element_type(0);
-			const StringName &fname = p_call->function_name;
-
-			// Determine which callback parameter indices should receive the element type.
-			// filter(cb), map(cb), any(cb), all(cb): callback arg 0 is element.
-			// reduce(cb, accum): callback arg 1 is element (arg 0 is accumulator).
-			// sort_custom(cb): callback args 0 and 1 are both elements.
-			int callable_arg_index = -1;
-			int element_param_start = -1;
-			int element_param_end = -1;
-
-			if (fname == SNAME("filter") || fname == SNAME("map") || fname == SNAME("any") || fname == SNAME("all")) {
-				callable_arg_index = 0;
-				element_param_start = 0;
-				element_param_end = 0;
-			} else if (fname == SNAME("reduce")) {
-				callable_arg_index = 0;
-				element_param_start = 1;
-				element_param_end = 1;
-			} else if (fname == SNAME("sort_custom")) {
-				callable_arg_index = 0;
-				element_param_start = 0;
-				element_param_end = 1;
-			}
-
-			if (callable_arg_index >= 0 && lambdas.has(callable_arg_index)) {
-				Vector<GDScriptParser::DataType> param_types;
-				param_types.resize(element_param_end + 1);
-				for (int i = element_param_start; i <= element_param_end; i++) {
-					param_types.write[i] = element_type;
-				}
-				update_lambda_parameter_types(lambdas[callable_arg_index], param_types);
-			}
-		}
+		// NOTE: Lambda parameter inference for typed Array method callbacks (filter/map/etc.)
+		// is handled by the loop above — `get_function_signature()` declares those parameters
+		// as typed callables, so no special-casing is needed here.
 
 		// Helper: locate the ClassNode that owns the signal we're about to call `emit`/`connect` on.
 		// The call's callee is a subscript `<signal_expr>.emit`; the signal itself is `<signal_expr>`.
@@ -4089,6 +4105,36 @@ void GDScriptAnalyzer::reduce_call(GDScriptParser::CallNode *p_call, bool p_is_a
 				base_type.kind == GDScriptParser::DataType::NATIVE && ClassDB::is_parent_class(base_type.native_type, SNAME("Script"))) {
 			call_type = base_type.get_container_element_type(0);
 			call_type.is_meta_type = false;
+		}
+
+		// `Array.map()`/`Array.reduce()` with a typed callable: derive the result type from the
+		// callable's declared return type. `map` results are WEAK — at runtime `map()` returns
+		// an untyped Array (core cannot know the callable's return type), so a hard `Array[T]`
+		// claim would break compiled typed assignments; weak types give hints without
+		// enforcement. `reduce` is hard when an accumulator argument is present and statically
+		// compatible (the typed callable enforces its return at runtime), weak otherwise (an
+		// empty array returns the accumulator — possibly absent/null — unchanged).
+		if (base_type.kind == GDScriptParser::DataType::BUILTIN && base_type.builtin_type == Variant::ARRAY && !p_call->arguments.is_empty() &&
+				(p_call->function_name == SNAME("map") || p_call->function_name == SNAME("reduce"))) {
+			const GDScriptParser::DataType &callback_type = p_call->arguments[0]->get_datatype();
+			if (callback_type.is_typed_callable && !callback_type.callable_return_type.is_empty()) {
+				GDScriptParser::DataType callback_return = callback_type.callable_return_type[0];
+				const bool is_void = callback_return.kind == GDScriptParser::DataType::BUILTIN && callback_return.builtin_type == Variant::NIL;
+				if (callback_return.kind != GDScriptParser::DataType::VARIANT && !is_void) {
+					callback_return.is_constant = false;
+					if (p_call->function_name == SNAME("map")) {
+						call_type.set_container_element_type(0, callback_return);
+						call_type.type_source = GDScriptParser::DataType::INFERRED;
+					} else {
+						const bool hard_accum = p_call->arguments.size() >= 2 && p_call->arguments[1]->get_datatype().is_hard_type() &&
+								check_type_compatibility(callback_return, p_call->arguments[1]->get_datatype());
+						call_type = callback_return;
+						if (!hard_accum) {
+							call_type.type_source = GDScriptParser::DataType::INFERRED;
+						}
+					}
+				}
+			}
 		}
 
 		// `Asset.Instantiate(SomeClass)` returns an instance of `SomeClass` (built
@@ -6421,7 +6467,7 @@ bool GDScriptAnalyzer::get_function_signature(GDScriptParser::Node *p_source, bo
 					// Methods that return a single element (Variant -> element type).
 					if (p_function == SNAME("front") || p_function == SNAME("back") || p_function == SNAME("pick_random") ||
 							p_function == SNAME("pop_back") || p_function == SNAME("pop_front") || p_function == SNAME("pop_at") ||
-							p_function == SNAME("min") || p_function == SNAME("max")) {
+							p_function == SNAME("get") || p_function == SNAME("min") || p_function == SNAME("max")) {
 						r_return_type = element_type;
 						r_return_type.is_constant = false;
 					}
@@ -6436,13 +6482,56 @@ bool GDScriptAnalyzer::get_function_signature(GDScriptParser::Node *p_source, bo
 						}
 					}
 
-					// `insert(position, value)`: second parameter is the element type.
-					if (p_function == SNAME("insert")) {
+					// `insert(position, value)` / `set(index, value)`: second parameter is the element type.
+					if (p_function == SNAME("insert") || p_function == SNAME("set")) {
 						List<GDScriptParser::DataType>::Iterator it = r_par_types.begin();
 						if (it != r_par_types.end()) {
 							++it;
 							if (it != r_par_types.end()) {
 								*it = element_type;
+							}
+						}
+					}
+
+					// Methods whose callback parameter signature depends on the element type.
+					// This single declaration drives lambda parameter inference (via
+					// `update_lambdas_from_typed_callable()`), argument validation, and editor hints.
+					{
+						GDScriptParser::DataType bool_type;
+						bool_type.type_source = GDScriptParser::DataType::ANNOTATED_EXPLICIT;
+						bool_type.kind = GDScriptParser::DataType::BUILTIN;
+						bool_type.builtin_type = Variant::BOOL;
+
+						GDScriptParser::DataType variant_type;
+						variant_type.type_source = GDScriptParser::DataType::ANNOTATED_EXPLICIT;
+						variant_type.kind = GDScriptParser::DataType::VARIANT;
+
+						int callback_par_index = -1;
+						GDScriptParser::DataType callback_type;
+						if (p_function == SNAME("filter") || p_function == SNAME("any") || p_function == SNAME("all") ||
+								p_function == SNAME("find_custom") || p_function == SNAME("rfind_custom")) {
+							callback_par_index = 0;
+							callback_type = make_container_callback_type({ element_type }, bool_type);
+						} else if (p_function == SNAME("map")) {
+							callback_par_index = 0;
+							callback_type = make_container_callback_type({ element_type }, variant_type);
+						} else if (p_function == SNAME("reduce")) {
+							callback_par_index = 0;
+							callback_type = make_container_callback_type({ variant_type, element_type }, variant_type);
+						} else if (p_function == SNAME("sort_custom")) {
+							callback_par_index = 0;
+							callback_type = make_container_callback_type({ element_type, element_type }, bool_type);
+						} else if (p_function == SNAME("bsearch_custom")) {
+							callback_par_index = 1;
+							callback_type = make_container_callback_type({ element_type, element_type }, bool_type);
+						}
+						if (callback_par_index >= 0) {
+							List<GDScriptParser::DataType>::Iterator it = r_par_types.begin();
+							for (int i = 0; i < callback_par_index && it != r_par_types.end(); i++) {
+								++it;
+							}
+							if (it != r_par_types.end()) {
+								*it = callback_type;
 							}
 						}
 					}

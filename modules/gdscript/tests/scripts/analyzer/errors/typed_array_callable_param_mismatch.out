@@ -1,0 +1,2 @@
+GDTEST_ANALYZER_ERROR
+>> ERROR at line 3: Invalid argument for "filter()" function: argument 1 should be "func(Node3D) -> bool" but is "func(String) -> bool".

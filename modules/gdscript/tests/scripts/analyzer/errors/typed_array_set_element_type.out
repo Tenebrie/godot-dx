@@ -1,0 +1,2 @@
+GDTEST_ANALYZER_ERROR
+>> ERROR at line 4: Invalid argument for "set()" function: argument 2 should be "String" but is "int".

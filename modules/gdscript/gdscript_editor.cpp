@@ -1227,7 +1227,7 @@ static String _get_container_method_return_type_text(const GDScriptParser::DataT
 	if (p_base_type.builtin_type == Variant::ARRAY && p_base_type.has_container_element_type(0)) {
 		if (p_method == SNAME("front") || p_method == SNAME("back") || p_method == SNAME("pick_random") ||
 				p_method == SNAME("pop_back") || p_method == SNAME("pop_front") || p_method == SNAME("pop_at") ||
-				p_method == SNAME("min") || p_method == SNAME("max")) {
+				p_method == SNAME("get") || p_method == SNAME("min") || p_method == SNAME("max")) {
 			return p_base_type.get_container_element_type(0).to_string();
 		}
 		if (p_method == SNAME("filter") || p_method == SNAME("duplicate") || p_method == SNAME("duplicate_deep") || p_method == SNAME("slice")) {
@@ -1265,8 +1265,21 @@ static HashMap<int, String> _get_container_method_arg_type_overrides(const GDScr
 				p_method == SNAME("has") || p_method == SNAME("erase") || p_method == SNAME("fill") ||
 				p_method == SNAME("bsearch") || p_method == SNAME("bsearch_custom")) {
 			override_arg_types[0] = element_type_name;
-		} else if (p_method == SNAME("insert")) {
+		} else if (p_method == SNAME("insert") || p_method == SNAME("set")) {
 			override_arg_types[1] = element_type_name;
+		}
+		// Callback parameters typed by the element type.
+		if (p_method == SNAME("filter") || p_method == SNAME("any") || p_method == SNAME("all") ||
+				p_method == SNAME("find_custom") || p_method == SNAME("rfind_custom")) {
+			override_arg_types[0] = "func(" + element_type_name + ") -> bool";
+		} else if (p_method == SNAME("map")) {
+			override_arg_types[0] = "func(" + element_type_name + ") -> Variant";
+		} else if (p_method == SNAME("reduce")) {
+			override_arg_types[0] = "func(Variant, " + element_type_name + ") -> Variant";
+		} else if (p_method == SNAME("sort_custom")) {
+			override_arg_types[0] = "func(" + element_type_name + ", " + element_type_name + ") -> bool";
+		} else if (p_method == SNAME("bsearch_custom")) {
+			override_arg_types[1] = "func(" + element_type_name + ", " + element_type_name + ") -> bool";
 		}
 	} else if (p_base_type.builtin_type == Variant::DICTIONARY) {
 		if (p_base_type.has_container_element_type(0)) {
@@ -2225,6 +2238,32 @@ static bool _guess_expression_type(GDScriptParser::CompletionContext &p_context,
 							r_type.type = base.type;
 							found = true;
 							break;
+						}
+					}
+
+					// `map`/`reduce` with a typed callable argument take their result type from
+					// the callable's declared return type.
+					if (base.type.builtin_type == Variant::ARRAY && !call->arguments.is_empty() &&
+							(call->function_name == SNAME("map") || call->function_name == SNAME("reduce"))) {
+						const GDScriptParser::DataType &callback_type = call->arguments[0]->get_datatype();
+						if (callback_type.is_typed_callable && !callback_type.callable_return_type.is_empty()) {
+							GDScriptParser::DataType callback_return = callback_type.callable_return_type[0];
+							const bool is_void = callback_return.kind == GDScriptParser::DataType::BUILTIN && callback_return.builtin_type == Variant::NIL;
+							if (callback_return.kind != GDScriptParser::DataType::VARIANT && !is_void) {
+								callback_return.is_constant = false;
+								if (call->function_name == SNAME("map")) {
+									GDScriptParser::DataType array_type;
+									array_type.type_source = GDScriptParser::DataType::ANNOTATED_EXPLICIT;
+									array_type.kind = GDScriptParser::DataType::BUILTIN;
+									array_type.builtin_type = Variant::ARRAY;
+									array_type.set_container_element_type(0, callback_return);
+									r_type.type = array_type;
+								} else {
+									r_type.type = callback_return;
+								}
+								found = true;
+								break;
+							}
 						}
 					}
 
@@ -4770,6 +4809,22 @@ static Error _lookup_symbol_from_base(const GDScriptParser::DataType &p_base, co
 						}
 
 						GDScriptDocGen::doctype_from_gdtype(local.get_datatype(), r_result.doc_type, r_result.enumeration);
+
+						// DocData has no representation for typed callables (collapsed to `Callable`)
+						// or weak types (collapsed to `Variant`) — show the known GDScript type
+						// syntax instead: hover is a hint surface, not a guarantee.
+						{
+							const GDScriptParser::DataType &local_type = local.get_datatype();
+							bool involves_typed_callable = local_type.is_typed_callable;
+							for (int i = 0; !involves_typed_callable && i < local_type.container_element_types.size(); i++) {
+								involves_typed_callable = local_type.get_container_element_type(i).is_typed_callable;
+							}
+							const bool weak_but_known = !local_type.is_hard_type() && local_type.is_set() && !local_type.is_variant();
+							if (involves_typed_callable || weak_but_known) {
+								r_result.doc_type = local_type.to_string();
+								r_result.enumeration = String();
+							}
+						}
 
 						Error err = OK;
 						r_result.script = GDScriptCache::get_shallow_script(base_type.script_path, err);

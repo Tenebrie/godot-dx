@@ -77,10 +77,9 @@ String GDScriptDocGen::_get_gdscript_name(const GDScript *p_script) {
 }
 
 void GDScriptDocGen::_doctype_from_gdtype(const GDType &p_gdtype, String &r_type, String &r_enum, bool p_is_return) {
-	if (!p_gdtype.is_hard_type()) {
-		r_type = "Variant";
-		return;
-	}
+	// Weak (unenforced) types still carry the best-known type — document it rather than
+	// collapsing to `Variant`. Truly unknown kinds (VARIANT/RESOLVING/UNRESOLVED) fall
+	// through to "Variant" below.
 	switch (p_gdtype.kind) {
 		case GDType::BUILTIN:
 			if (p_gdtype.builtin_type == Variant::NIL) {

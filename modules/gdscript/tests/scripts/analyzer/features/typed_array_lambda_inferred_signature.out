@@ -1,0 +1,4 @@
+GDTEST_OK
+~~ WARNING at line 12: (UNSAFE_CALL_ARGUMENT) The argument 1 of the constructor "bool()" requires the subtype "bool", "int", or "float" but the supertype "Variant" was provided.
+true
+true

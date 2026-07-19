@@ -35,6 +35,7 @@
 #include "../gdscript.h"
 #include "gdscript_test_runner.h"
 
+#include "core/config/project_settings.h"
 #include "core/io/config_file.h"
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
@@ -117,8 +118,23 @@ static void test_lookup_directory(const String &p_dir) {
 			const String symbol = conf.get_value("input", "symbol", "");
 			CHECK_MESSAGE(!symbol.is_empty(), "No [input] symbol in '", path.path_join(next), "'.");
 
+			// `lookup_code` loads the script at the given path for go-to-definition info, and
+			// the real test file contains the cursor sentinel (invalid GDScript) — give it a
+			// sanitized copy instead. `.notest.gd` keeps it out of every runner's scan.
+			const String sanitized_disk_path = path.path_join(next.get_basename() + ".tmp.notest.gd");
+			{
+				Ref<FileAccess> sanitized = FileAccess::open(sanitized_disk_path, FileAccess::WRITE, &err);
+				CHECK_MESSAGE(err == OK, "Could not write sanitized lookup script for '", path.path_join(next), "'.");
+				if (err == OK) {
+					sanitized->store_string(code.replace(String::chr(0xFFFF), ""));
+				}
+			}
+
 			ScriptLanguage::LookupResult result;
-			const Error lookup_err = GDScriptLanguage::get_singleton()->lookup_code(code, symbol, path.path_join(next), nullptr, result);
+			const String res_path = ProjectSettings::get_singleton()->localize_path(sanitized_disk_path);
+			const Error lookup_err = GDScriptLanguage::get_singleton()->lookup_code(code, symbol, res_path, nullptr, result);
+
+			DirAccess::remove_absolute(sanitized_disk_path);
 
 			CHECK_MESSAGE(lookup_err == OK, "Lookup failed for '", path.path_join(next), "'.");
 			if (lookup_err != OK) {
@@ -137,6 +153,10 @@ static void test_lookup_directory(const String &p_dir) {
 			if (conf.has_section_key("output", "class_member")) {
 				const String expected_member = conf.get_value("output", "class_member");
 				CHECK_MESSAGE(expected_member == result.class_member, "Wrong lookup class_member for '", path.path_join(next), "': got '", result.class_member, "'.");
+			}
+			if (conf.has_section_key("output", "doc_type")) {
+				const String expected_doc_type = conf.get_value("output", "doc_type");
+				CHECK_MESSAGE(expected_doc_type == result.doc_type, "Wrong lookup doc_type for '", path.path_join(next), "': got '", result.doc_type, "'.");
 			}
 			if (conf.has_section_key("output", "method_return_type_override")) {
 				const String expected_return = conf.get_value("output", "method_return_type_override");
