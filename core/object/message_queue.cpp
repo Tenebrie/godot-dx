@@ -216,6 +216,20 @@ void CallQueue::_call_function(const Callable &p_callable, const Variant *p_args
 	Callable::CallError ce;
 	Variant ret;
 	p_callable.callp(argptrs, p_argcount, ret, ce);
+
+	// If the callable's target accepts fewer arguments than delivered (e.g. a deferred
+	// signal connection to a handler that ignores trailing signal arguments), retry with
+	// only as many input arguments as fit, accounting for the callable's own bound and
+	// unbound arguments. Mirrors Object::emit_signalp().
+	if (ce.error == Callable::CallError::CALL_ERROR_TOO_MANY_ARGUMENTS && ce.expected >= 0) {
+		const int callable_arg_net = p_callable.get_bound_arguments_count() - p_callable.get_unbound_arguments_count();
+		const int retry_argc = ce.expected - callable_arg_net;
+		if (retry_argc >= 0 && retry_argc < p_argcount) {
+			ce.error = Callable::CallError::CALL_OK;
+			p_callable.callp(argptrs, retry_argc, ret, ce);
+		}
+	}
+
 	if (p_show_error && ce.error != Callable::CallError::CALL_OK) {
 		ERR_PRINT("Error calling deferred method: " + Variant::get_callable_error_text(p_callable, argptrs, p_argcount, ce) + ".");
 	}

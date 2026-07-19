@@ -84,25 +84,41 @@
 	</members>
 	<signals>
 		<signal name="button_down">
+			<param index="0" name="mouse_button_index" type="int" />
+			<param index="1" name="event" type="InputEvent" />
 			<description>
 				Emitted when the button starts being held down.
+				[param mouse_button_index] is the mouse button that triggered it (see [enum MouseButton] and [member button_mask]), or [constant MOUSE_BUTTON_NONE] for non-mouse activation (keyboard, touch). [param event] is the triggering [InputEvent].
+				Handlers may declare fewer parameters — trailing arguments are dropped.
 			</description>
 		</signal>
 		<signal name="button_up">
+			<param index="0" name="mouse_button_index" type="int" />
+			<param index="1" name="event" type="InputEvent" />
 			<description>
 				Emitted when the button stops being held down.
+				[param mouse_button_index] is the mouse button that initiated the press (see [enum MouseButton]), or [constant MOUSE_BUTTON_NONE] for non-mouse activation. [param event] is the triggering [InputEvent], or [code]null[/code] when released without input (e.g. losing focus or being disabled).
+				Handlers may declare fewer parameters — trailing arguments are dropped.
 			</description>
 		</signal>
 		<signal name="pressed">
+			<param index="0" name="mouse_button_index" type="int" />
+			<param index="1" name="event" type="InputEvent" />
 			<description>
 				Emitted when the button is toggled or pressed. This is on [signal button_down] if [member action_mode] is [constant ACTION_MODE_BUTTON_PRESS] and on [signal button_up] otherwise.
 				If you need to know the button's pressed state (and [member toggle_mode] is active), use [signal toggled] instead.
+				[param mouse_button_index] is the mouse button that triggered the press (see [enum MouseButton] and [member button_mask]), or [constant MOUSE_BUTTON_NONE] for non-mouse activation (keyboard, shortcut, touch, accessibility). [param event] is the triggering [InputEvent], or [code]null[/code] for programmatic activation.
+				Handlers may declare fewer parameters — trailing arguments are dropped.
 			</description>
 		</signal>
 		<signal name="toggled">
 			<param index="0" name="toggled_on" type="bool" />
+			<param index="1" name="mouse_button_index" type="int" />
+			<param index="2" name="event" type="InputEvent" />
 			<description>
 				Emitted when the button was just toggled between pressed and normal states (only if [member toggle_mode] is active). The new state is contained in the [param toggled_on] argument.
+				[param mouse_button_index] is the mouse button that triggered the toggle (see [enum MouseButton]), or [constant MOUSE_BUTTON_NONE] for non-mouse activation. [param event] is the triggering [InputEvent], or [code]null[/code] for programmatic toggles (e.g. [member button_pressed]).
+				Handlers may declare fewer parameters — trailing arguments are dropped.
 			</description>
 		</signal>
 	</signals>

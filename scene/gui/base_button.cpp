@@ -71,11 +71,15 @@ void BaseButton::gui_input(const Ref<InputEvent> &p_event) {
 					status.touch_index = touch->get_index();
 					status.press_attempt = true;
 					status.pressing_inside = has_point(touch->get_position());
+					status.last_button_index = MouseButton::NONE;
+					status.last_event = p_event;
 					on_action_event(p_event);
 				}
 			} else if (touch->get_index() == status.touch_index) {
 				if (!touch->is_pressed()) {
 					status.touch_index = -1;
+					status.last_button_index = MouseButton::NONE;
+					status.last_event = p_event;
 					on_action_event(p_event);
 				}
 			}
@@ -98,6 +102,8 @@ void BaseButton::gui_input(const Ref<InputEvent> &p_event) {
 	bool button_masked = mouse_button.is_valid() && button_mask.has_flag(mouse_button_to_mask(mouse_button->get_button_index()));
 	if (button_masked || ui_accept) {
 		was_mouse_pressed = button_masked;
+		status.last_button_index = button_masked ? mouse_button->get_button_index() : MouseButton::NONE;
+		status.last_event = p_event;
 		on_action_event(p_event);
 		was_mouse_pressed = false;
 	} else {
@@ -115,6 +121,8 @@ void BaseButton::gui_input(const Ref<InputEvent> &p_event) {
 }
 
 void BaseButton::_accessibility_action_click(const Variant &p_data) {
+	status.last_button_index = MouseButton::NONE;
+	status.last_event = Ref<InputEvent>();
 	if (toggle_mode) {
 		status.pressed = !status.pressed;
 
@@ -201,7 +209,7 @@ void BaseButton::_notification(int p_what) {
 
 			if (status.pressed_down_with_focus) {
 				status.pressed_down_with_focus = false;
-				emit_signal(SNAME("button_up"));
+				emit_signal(SNAME("button_up"), status.last_button_index, status.last_event);
 			}
 		} break;
 
@@ -224,13 +232,13 @@ void BaseButton::_notification(int p_what) {
 void BaseButton::_pressed() {
 	GDVIRTUAL_CALL(_pressed);
 	pressed();
-	emit_signal(SceneStringName(pressed));
+	emit_signal(SceneStringName(pressed), status.last_button_index, status.last_event);
 }
 
 void BaseButton::_toggled(bool p_pressed) {
 	GDVIRTUAL_CALL(_toggled, p_pressed);
 	toggled(p_pressed);
-	emit_signal(SceneStringName(toggled), p_pressed);
+	emit_signal(SceneStringName(toggled), p_pressed, status.last_button_index, status.last_event);
 }
 
 void BaseButton::on_action_event(Ref<InputEvent> p_event) {
@@ -245,7 +253,7 @@ void BaseButton::on_action_event(Ref<InputEvent> p_event) {
 		status.pressing_inside = true;
 		if (!status.pressed_down_with_focus) {
 			status.pressed_down_with_focus = true;
-			emit_signal(SNAME("button_down"));
+			emit_signal(SNAME("button_down"), status.last_button_index, status.last_event);
 		}
 	}
 
@@ -279,7 +287,7 @@ void BaseButton::on_action_event(Ref<InputEvent> p_event) {
 		status.pressing_inside = false;
 		if (status.pressed_down_with_focus) {
 			status.pressed_down_with_focus = false;
-			emit_signal(SNAME("button_up"));
+			emit_signal(SNAME("button_up"), status.last_button_index, status.last_event);
 		}
 	}
 
@@ -306,7 +314,7 @@ void BaseButton::set_disabled(bool p_disabled) {
 		status.pressing_inside = false;
 		if (status.pressed_down_with_focus) {
 			status.pressed_down_with_focus = false;
-			emit_signal(SNAME("button_up"));
+			emit_signal(SNAME("button_up"), status.last_button_index, status.last_event);
 		}
 	}
 	queue_accessibility_update();
@@ -325,6 +333,10 @@ void BaseButton::set_pressed(bool p_pressed) {
 	if (status.pressed == prev_pressed) {
 		return;
 	}
+
+	// Programmatic toggle: no triggering input.
+	status.last_button_index = MouseButton::NONE;
+	status.last_event = Ref<InputEvent>();
 
 	if (p_pressed) {
 		_unpress_group();
@@ -473,6 +485,8 @@ void BaseButton::shortcut_input(const Ref<InputEvent> &p_event) {
 	ERR_FAIL_COND(p_event.is_null());
 
 	if (!is_disabled() && p_event->is_pressed() && is_visible_in_tree() && !p_event->is_echo() && shortcut.is_valid() && shortcut->matches_event(p_event)) {
+		status.last_button_index = MouseButton::NONE;
+		status.last_event = p_event;
 		if (toggle_mode) {
 			status.pressed = !status.pressed;
 
@@ -607,10 +621,29 @@ void BaseButton::_bind_methods() {
 	GDVIRTUAL_BIND(_pressed);
 	GDVIRTUAL_BIND(_toggled, "toggled_on");
 
-	ADD_SIGNAL(MethodInfo("pressed"));
-	ADD_SIGNAL(MethodInfo("button_up"));
-	ADD_SIGNAL(MethodInfo("button_down"));
-	ADD_SIGNAL(MethodInfo("toggled", PropertyInfo(Variant::BOOL, "toggled_on")));
+	// The activation signals report what triggered them; both trailing parameters
+	// default so manual `emit()` calls without them stay valid.
+	{
+		MethodInfo mi_pressed("pressed", PropertyInfo(Variant::INT, "mouse_button_index"), PropertyInfo(Variant::OBJECT, "event", PROPERTY_HINT_RESOURCE_TYPE, "InputEvent"));
+		mi_pressed.default_arguments.push_back((int)MouseButton::NONE);
+		mi_pressed.default_arguments.push_back(Variant());
+		ADD_SIGNAL(mi_pressed);
+
+		MethodInfo mi_button_up("button_up", PropertyInfo(Variant::INT, "mouse_button_index"), PropertyInfo(Variant::OBJECT, "event", PROPERTY_HINT_RESOURCE_TYPE, "InputEvent"));
+		mi_button_up.default_arguments.push_back((int)MouseButton::NONE);
+		mi_button_up.default_arguments.push_back(Variant());
+		ADD_SIGNAL(mi_button_up);
+
+		MethodInfo mi_button_down("button_down", PropertyInfo(Variant::INT, "mouse_button_index"), PropertyInfo(Variant::OBJECT, "event", PROPERTY_HINT_RESOURCE_TYPE, "InputEvent"));
+		mi_button_down.default_arguments.push_back((int)MouseButton::NONE);
+		mi_button_down.default_arguments.push_back(Variant());
+		ADD_SIGNAL(mi_button_down);
+
+		MethodInfo mi_toggled("toggled", PropertyInfo(Variant::BOOL, "toggled_on"), PropertyInfo(Variant::INT, "mouse_button_index"), PropertyInfo(Variant::OBJECT, "event", PROPERTY_HINT_RESOURCE_TYPE, "InputEvent"));
+		mi_toggled.default_arguments.push_back((int)MouseButton::NONE);
+		mi_toggled.default_arguments.push_back(Variant());
+		ADD_SIGNAL(mi_toggled);
+	}
 
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "disabled"), "set_disabled", "is_disabled");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "toggle_mode"), "set_toggle_mode", "is_toggle_mode");

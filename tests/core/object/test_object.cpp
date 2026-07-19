@@ -34,6 +34,7 @@ TEST_FORCE_LINK(test_object)
 
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
+#include "core/object/message_queue.h"
 #include "core/object/object.h"
 #include "core/object/script_language.h"
 #include "tests/signal_watcher.h"
@@ -689,6 +690,82 @@ TEST_CASE("[Object] RequiredResult") {
 
 	CHECK_EQ(ref, unpacked);
 	CHECK_EQ(ref, var);
+}
+
+static int bound_only_call_count = 0;
+static int bound_only_a = -1;
+static int bound_only_b = -1;
+static void _bound_only_handler(int p_a, int p_b) {
+	bound_only_call_count++;
+	bound_only_a = p_a;
+	bound_only_b = p_b;
+}
+
+static int sig_and_bind_call_count = 0;
+static int sig_and_bind_first = -1;
+static int sig_and_bind_second = -1;
+static int sig_and_bind_bound = -1;
+static void _sig_and_bind_handler(int p_first, int p_second, int p_bound) {
+	sig_and_bind_call_count++;
+	sig_and_bind_first = p_first;
+	sig_and_bind_second = p_second;
+	sig_and_bind_bound = p_bound;
+}
+
+static int zero_arg_handler_count = 0;
+static void _zero_arg_handler() {
+	zero_arg_handler_count++;
+}
+
+static MethodInfo _make_two_arg_default_signal() {
+	// Signal declared as (first: int, second: int) with defaults (7, 8).
+	MethodInfo mi("defaults_signal", PropertyInfo(Variant::INT, "first"), PropertyInfo(Variant::INT, "second"));
+	mi.default_arguments.push_back(7);
+	mi.default_arguments.push_back(8);
+	return mi;
+}
+
+TEST_CASE("[Object] Signal emission adapts argument count to handlers with bound arguments") {
+	Object object;
+	object.add_user_signal(_make_two_arg_default_signal());
+
+	// A handler taking ONLY its bound arguments must have all signal arguments
+	// dropped (the EditorRunBar pattern: `pressed.connect(handler.bind(a, b))`).
+	bound_only_call_count = 0;
+	object.connect("defaults_signal", callable_mp_static(&_bound_only_handler).bind(101, 102));
+	object.emit_signal("defaults_signal", 1, 2);
+	CHECK(bound_only_call_count == 1);
+	CHECK(bound_only_a == 101);
+	CHECK(bound_only_b == 102);
+	object.disconnect("defaults_signal", callable_mp_static(&_bound_only_handler).bind(101, 102));
+
+	// Same, deferred.
+	bound_only_call_count = 0;
+	object.connect("defaults_signal", callable_mp_static(&_bound_only_handler).bind(103, 104), Object::CONNECT_DEFERRED);
+	object.emit_signal("defaults_signal", 1, 2);
+	MessageQueue::get_singleton()->flush();
+	CHECK(bound_only_call_count == 1);
+	CHECK(bound_only_a == 103);
+	CHECK(bound_only_b == 104);
+	object.disconnect("defaults_signal", callable_mp_static(&_bound_only_handler).bind(103, 104));
+
+	// Under-emission pads from the signal's declared defaults, keeping bound
+	// arguments after the padded signal arguments.
+	sig_and_bind_call_count = 0;
+	object.connect("defaults_signal", callable_mp_static(&_sig_and_bind_handler).bind(55));
+	object.emit_signal("defaults_signal", 1);
+	CHECK(sig_and_bind_call_count == 1);
+	CHECK(sig_and_bind_first == 1);
+	CHECK(sig_and_bind_second == 8);
+	CHECK(sig_and_bind_bound == 55);
+	object.disconnect("defaults_signal", callable_mp_static(&_sig_and_bind_handler).bind(55));
+
+	// `unbind()` connections to a handler taking fewer arguments than remain
+	// (the editor's `toggled.connect(handler.unbind(1))` pattern).
+	zero_arg_handler_count = 0;
+	object.connect("defaults_signal", callable_mp_static(&_zero_arg_handler).unbind(1));
+	object.emit_signal("defaults_signal", 1, 2);
+	CHECK(zero_arg_handler_count == 1);
 }
 
 } // namespace TestObject

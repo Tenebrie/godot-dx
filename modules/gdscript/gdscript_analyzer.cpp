@@ -4006,7 +4006,7 @@ void GDScriptAnalyzer::reduce_call(GDScriptParser::CallNode *p_call, bool p_is_a
 				for (int i = 0; i < signal_params.size(); i++) {
 					par_types.push_back(signal_params[i]);
 				}
-				default_arg_count = 0;
+				default_arg_count = base_type.method_info.default_arguments.size();
 				is_signal_emit_vararg = false;
 			}
 		}

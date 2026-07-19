@@ -1292,11 +1292,51 @@ Error Object::emit_signalp(const StringName &p_name, const Variant **p_args, int
 			Variant ret;
 			callable.callp(args, argc, ret, ce);
 
-			// If the callable accepts fewer arguments than the signal provides,
-			// retry with only the number of arguments it expects.
-			if (ce.error == Callable::CallError::CALL_ERROR_TOO_MANY_ARGUMENTS && ce.expected >= 0 && ce.expected < argc) {
-				ce.error = Callable::CallError::CALL_OK;
-				callable.callp(args, ce.expected, ret, ce);
+			// Net arguments the callable itself adds (binds) or drops (unbinds) before
+			// reaching its target: with `x` input arguments the target receives `x + net`.
+			const int callable_arg_net = callable.get_bound_arguments_count() - callable.get_unbound_arguments_count();
+
+			// If the target accepts fewer arguments than delivered (signal arguments plus
+			// bound arguments), retry with only as many signal arguments as fit.
+			if (ce.error == Callable::CallError::CALL_ERROR_TOO_MANY_ARGUMENTS && ce.expected >= 0) {
+				const int retry_argc = ce.expected - callable_arg_net;
+				if (retry_argc >= 0 && retry_argc < argc) {
+					ce.error = Callable::CallError::CALL_OK;
+					callable.callp(args, retry_argc, ret, ce);
+				}
+			}
+
+			// If the signal was emitted with fewer arguments than declared (manual `emit()`
+			// relying on signal parameter defaults), retry padding the missing trailing
+			// signal arguments with the declared defaults. Bound arguments still land after
+			// the padded signal arguments, in order. Skipped when the source object was
+			// appended, as it goes after the signal arguments.
+			if (ce.error == Callable::CallError::CALL_ERROR_TOO_FEW_ARGUMENTS && argc == p_argcount) {
+				const int needed_argc = ce.expected - callable_arg_net;
+				MethodInfo signal_mi;
+				bool has_mi = false;
+				{
+					const SignalData *sd = signal_map.getptr(p_name);
+					if (sd && !sd->user.name.is_empty()) {
+						signal_mi = sd->user;
+						has_mi = true;
+					}
+				}
+				if (!has_mi) {
+					has_mi = ClassDB::get_signal(get_class_name(), p_name, &signal_mi);
+				}
+				const int defaults_start = signal_mi.arguments.size() - signal_mi.default_arguments.size();
+				if (has_mi && needed_argc > argc && needed_argc <= (int)signal_mi.arguments.size() && defaults_start <= argc) {
+					const Variant **padded_args = (const Variant **)alloca(sizeof(const Variant *) * needed_argc);
+					for (int j = 0; j < argc; j++) {
+						padded_args[j] = args[j];
+					}
+					for (int j = argc; j < needed_argc; j++) {
+						padded_args[j] = &signal_mi.default_arguments[j - defaults_start];
+					}
+					ce.error = Callable::CallError::CALL_OK;
+					callable.callp(padded_args, needed_argc, ret, ce);
+				}
 			}
 
 			_emitting = false;

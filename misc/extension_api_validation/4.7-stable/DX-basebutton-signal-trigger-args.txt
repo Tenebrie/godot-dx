@@ -1,0 +1,18 @@
+DX-basebutton-signal-trigger-args
+---------------------------------
+
+Validate extension JSON: JSON file: Field was added in a way that breaks compatibility 'classes/BaseButton/signals/pressed': arguments
+Validate extension JSON: JSON file: Field was added in a way that breaks compatibility 'classes/BaseButton/signals/button_up': arguments
+Validate extension JSON: JSON file: Field was added in a way that breaks compatibility 'classes/BaseButton/signals/button_down': arguments
+Validate extension JSON: Error: Field 'classes/BaseButton/signals/toggled/arguments': size changed value in new API, from 1 to 3.
+
+Added (mouse_button_index, event) trailing arguments to BaseButton's `pressed`,
+`button_up`, and `button_down` signals, and to `toggled` after `toggled_on`, so
+handlers can tell which mouse button (or other input) triggered the activation.
+
+This is runtime-compatible in this fork: signal emission drops trailing arguments
+for handlers that declare fewer parameters (Object::emit_signalp and the deferred
+MessageQueue path both retry with the handler's expected count), and both new
+parameters have default values so existing manual `emit()` calls stay valid.
+C# consumers regenerate their glue from this API and may need to update strongly
+typed signal handler delegates.

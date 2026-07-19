@@ -64,6 +64,11 @@ private:
 		bool pressed_down_with_focus = false;
 		bool disabled = false;
 		int touch_index = -1;
+		// What triggered the current/last activation, reported by the `pressed`,
+		// `button_down`, `button_up`, and `toggled` signals. NONE/null for
+		// non-mouse activation (keyboard, shortcut, touch, programmatic).
+		MouseButton last_button_index = MouseButton::NONE;
+		Ref<InputEvent> last_event;
 	} status;
 
 	Ref<ButtonGroup> button_group;
