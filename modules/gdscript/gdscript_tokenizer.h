@@ -157,6 +157,9 @@ public:
 			VCS_CONFLICT_MARKER,
 			BACKTICK,
 			QUESTION_MARK,
+			// Optional chaining
+			QUESTION_PERIOD,
+			QUESTION_BRACKET_OPEN,
 			// Special
 			ERROR,
 			TK_EOF, // "EOF" is reserved

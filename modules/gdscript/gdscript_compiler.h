@@ -172,6 +172,10 @@ class GDScriptCompiler {
 	StringName source;
 	String error;
 	GDScriptParser::ExpressionNode *awaited_node = nullptr;
+	// True while compiling the base link of a postfix chain (`a?.b.c`), so the
+	// base doesn't open its own null-safe chain frame. Consumed (reset) at
+	// every _parse_expression entry.
+	bool compiling_chain_base = false;
 	bool has_static_data = false;
 
 public:

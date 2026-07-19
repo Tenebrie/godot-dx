@@ -3023,6 +3023,7 @@ GDScriptParser::ExpressionNode *GDScriptParser::parse_precedence(Precedence p_pr
 			// case GDScriptTokenizer::Token::BRACE_OPEN: // Not an infix operator.
 			case GDScriptTokenizer::Token::PARENTHESIS_OPEN:
 			case GDScriptTokenizer::Token::BRACKET_OPEN:
+			case GDScriptTokenizer::Token::QUESTION_BRACKET_OPEN:
 				push_multiline(true);
 				break;
 			default:
@@ -3381,9 +3382,25 @@ GDScriptParser::ExpressionNode *GDScriptParser::parse_assignment(ExpressionNode 
 			}
 #endif
 		} break;
-		case Node::SUBSCRIPT:
-			// Okay.
-			break;
+		case Node::SUBSCRIPT: {
+			// Optional-chained expressions are read-only: storing into a chain
+			// that may have short-circuited has no meaningful target.
+			const ExpressionNode *chain_link = p_previous_operand;
+			while (chain_link != nullptr) {
+				if (chain_link->type == Node::SUBSCRIPT) {
+					const SubscriptNode *link_subscript = static_cast<const SubscriptNode *>(chain_link);
+					if (link_subscript->is_null_safe) {
+						push_error(R"(Cannot assign a new value to an optional-chained expression.)");
+						return parse_expression(false); // Return the following expression.
+					}
+					chain_link = link_subscript->base;
+				} else if (chain_link->type == Node::CALL) {
+					chain_link = static_cast<const CallNode *>(chain_link)->callee;
+				} else {
+					break;
+				}
+			}
+		} break;
 		default:
 			push_error(R"(Only identifier, attribute access, and subscription access can be used as assignment target.)");
 			return parse_expression(false); // Return the following expression.
@@ -3620,6 +3637,7 @@ GDScriptParser::ExpressionNode *GDScriptParser::parse_attribute(ExpressionNode *
 	SubscriptNode *attribute = alloc_node<SubscriptNode>();
 	reset_extents(attribute, p_previous_operand);
 	update_extents(attribute);
+	attribute->is_null_safe = previous.type == GDScriptTokenizer::Token::QUESTION_PERIOD;
 
 	if (for_completion) {
 		bool is_builtin = false;
@@ -3657,6 +3675,7 @@ GDScriptParser::ExpressionNode *GDScriptParser::parse_subscript(ExpressionNode *
 	SubscriptNode *subscript = alloc_node<SubscriptNode>();
 	reset_extents(subscript, p_previous_operand);
 	update_extents(subscript);
+	subscript->is_null_safe = previous.type == GDScriptTokenizer::Token::QUESTION_BRACKET_OPEN;
 
 	make_completion_context(COMPLETION_SUBSCRIPT, subscript);
 
@@ -4648,6 +4667,9 @@ GDScriptParser::ParseRule *GDScriptParser::get_rule(GDScriptTokenizer::Token::Ty
 		{ nullptr,                                          nullptr,                                        PREC_NONE }, // VCS_CONFLICT_MARKER,
 		{ nullptr,                                          nullptr,                                        PREC_NONE }, // BACKTICK,
 		{ nullptr,                                          &GDScriptParser::parse_invalid_token,        	PREC_CAST }, // QUESTION_MARK,
+		// Optional chaining
+		{ nullptr,                                          &GDScriptParser::parse_attribute,            	PREC_ATTRIBUTE }, // QUESTION_PERIOD,
+		{ nullptr,                                          &GDScriptParser::parse_subscript,            	PREC_SUBSCRIPT }, // QUESTION_BRACKET_OPEN,
 		// Special
 		{ nullptr,                                          nullptr,                                        PREC_NONE }, // ERROR,
 		{ nullptr,                                          nullptr,                                        PREC_NONE }, // TK_EOF,

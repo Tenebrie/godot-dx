@@ -1102,6 +1102,8 @@ public:
 		};
 
 		bool is_attribute = false;
+		// `?.` / `?[`: a null (or freed) base short-circuits the chain to null.
+		bool is_null_safe = false;
 
 		SubscriptNode() {
 			type = SUBSCRIPT;

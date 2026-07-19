@@ -143,6 +143,7 @@ class GDScriptByteCodeGenerator : public GDScriptCodeGenerator {
 
 	// Lists since these can be nested.
 	List<int> if_jmp_addrs;
+	List<List<int>> null_safe_chain_jmp_addrs; // One frame per active optional chain.
 	List<int> for_jmp_addrs;
 	List<Address> for_counter_variables;
 	List<Address> for_container_variables;
@@ -540,6 +541,9 @@ public:
 	virtual void write_endif() override;
 	virtual void write_jump_if_shared(const Address &p_value) override;
 	virtual void write_end_jump_if_shared() override;
+	virtual void start_null_safe_chain() override;
+	virtual void write_null_safe_guard(const Address &p_base) override;
+	virtual void end_null_safe_chain(const Address &p_result) override;
 	virtual void start_for(const GDScriptDataType &p_iterator_type, const GDScriptDataType &p_list_type, bool p_is_range) override;
 	virtual void write_for_list_assignment(const Address &p_list) override;
 	virtual void write_for_range_assignment(const Address &p_from, const Address &p_to, const Address &p_step) override;

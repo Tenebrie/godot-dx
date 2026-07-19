@@ -1072,6 +1072,14 @@ void GDScriptFunction::disassemble(const Vector<String> &p_code_lines) const {
 
 				incr = 3;
 			} break;
+			case OPCODE_JUMP_IF_NULL_OR_FREED: {
+				text += "jump-if-null-or-freed ";
+				text += DADDR(1);
+				text += " to ";
+				text += itos(_code_ptr[ip + 2]);
+
+				incr = 3;
+			} break;
 			case OPCODE_RETURN: {
 				text += "return ";
 				text += DADDR(1);

@@ -1,0 +1,2 @@
+GDTEST_RUNTIME_ERROR
+>> SCRIPT ERROR at runtime/errors/optional_chain_unguarded_tail.gd:9 on test(): Invalid access to property or key 'value' on a base object of type 'Nil'.

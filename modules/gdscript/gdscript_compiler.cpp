@@ -252,6 +252,9 @@ static bool _can_use_validate_call(const MethodBind *p_method, const Vector<GDSc
 }
 
 GDScriptCodeGenerator::Address GDScriptCompiler::_parse_expression(CodeGen &codegen, Error &r_error, const GDScriptParser::ExpressionNode *p_expression, bool p_root, bool p_initializer) {
+	const bool is_chain_link = compiling_chain_base;
+	compiling_chain_base = false;
+
 	if (p_expression->is_constant && !(p_expression->get_datatype().is_meta_type && p_expression->get_datatype().kind == GDScriptParser::DataType::CLASS)) {
 		return codegen.add_constant(p_expression->reduced_value);
 	}
@@ -603,6 +606,10 @@ GDScriptCodeGenerator::Address GDScriptCompiler::_parse_expression(CodeGen &code
 		case GDScriptParser::Node::CALL: {
 			const GDScriptParser::CallNode *call = static_cast<const GDScriptParser::CallNode *>(p_expression);
 			bool is_awaited = p_expression == awaited_node;
+			const bool chain_root = !is_chain_link && GDScriptAnalyzer::expression_chain_has_null_safe(call);
+			if (chain_root) {
+				gen->start_null_safe_chain();
+			}
 			GDScriptCodeGenerator::Address result;
 			if (p_root) {
 				result = GDScriptCodeGenerator::Address(GDScriptCodeGenerator::Address::NIL);
@@ -612,6 +619,32 @@ GDScriptCodeGenerator::Address GDScriptCompiler::_parse_expression(CodeGen &code
 				result = codegen.add_temporary();
 			} else {
 				result = codegen.add_temporary(_gdtype_from_datatype(call->get_datatype(), codegen.script));
+			}
+
+			// In a chain with `?.` links, the callee base must be evaluated before
+			// the arguments so a tripped guard also skips argument evaluation.
+			GDScriptCodeGenerator::Address chain_base;
+			bool chain_base_compiled = false;
+			if (!call->is_super && call->callee != nullptr && call->callee->type == GDScriptParser::Node::SUBSCRIPT) {
+				const GDScriptParser::SubscriptNode *callee_subscript = static_cast<const GDScriptParser::SubscriptNode *>(call->callee);
+				if (callee_subscript->is_attribute && callee_subscript->base != nullptr && GDScriptAnalyzer::expression_chain_has_null_safe(call->callee)) {
+					// Mirror the static-call conditions below: those paths never
+					// evaluate a base, so there is nothing to guard.
+					const bool is_static_builtin_call = callee_subscript->base->type == GDScriptParser::Node::IDENTIFIER && GDScriptParser::get_builtin_type(static_cast<GDScriptParser::IdentifierNode *>(callee_subscript->base)->name) < Variant::VARIANT_MAX;
+					const bool is_static_native_call = callee_subscript->base->type == GDScriptParser::Node::IDENTIFIER && call->function_name != SNAME("new") &&
+							static_cast<GDScriptParser::IdentifierNode *>(callee_subscript->base)->source == GDScriptParser::IdentifierNode::NATIVE_CLASS && !Engine::get_singleton()->has_singleton(static_cast<GDScriptParser::IdentifierNode *>(callee_subscript->base)->name);
+					if (!is_static_builtin_call && !is_static_native_call) {
+						compiling_chain_base = true;
+						chain_base = _parse_expression(codegen, r_error, callee_subscript->base);
+						if (r_error) {
+							return GDScriptCodeGenerator::Address();
+						}
+						if (callee_subscript->is_null_safe) {
+							gen->write_null_safe_guard(chain_base);
+						}
+						chain_base_compiled = true;
+					}
+				}
 			}
 
 			Vector<GDScriptCodeGenerator::Address> arguments;
@@ -689,9 +722,14 @@ GDScriptCodeGenerator::Address GDScriptCompiler::_parse_expression(CodeGen &code
 									gen->write_call_native_static(result, class_name, subscript->attribute->name, arguments);
 								}
 							} else {
-								GDScriptCodeGenerator::Address base = _parse_expression(codegen, r_error, subscript->base);
-								if (r_error) {
-									return GDScriptCodeGenerator::Address();
+								GDScriptCodeGenerator::Address base;
+								if (chain_base_compiled) {
+									base = chain_base;
+								} else {
+									base = _parse_expression(codegen, r_error, subscript->base);
+									if (r_error) {
+										return GDScriptCodeGenerator::Address();
+									}
 								}
 								if (is_awaited) {
 									gen->write_call_async(result, base, call->function_name, arguments);
@@ -720,7 +758,9 @@ GDScriptCodeGenerator::Address GDScriptCompiler::_parse_expression(CodeGen &code
 								} else {
 									gen->write_call(result, base, call->function_name, arguments);
 								}
-								if (base.mode == GDScriptCodeGenerator::Address::TEMPORARY) {
+								if (!chain_base_compiled && base.mode == GDScriptCodeGenerator::Address::TEMPORARY) {
+									// A precompiled chain base is popped after the
+									// arguments to keep the temporary stack LIFO.
 									gen->pop_temporary();
 								}
 							}
@@ -741,6 +781,12 @@ GDScriptCodeGenerator::Address GDScriptCompiler::_parse_expression(CodeGen &code
 				if (arguments[i].mode == GDScriptCodeGenerator::Address::TEMPORARY) {
 					gen->pop_temporary();
 				}
+			}
+			if (chain_base_compiled && chain_base.mode == GDScriptCodeGenerator::Address::TEMPORARY) {
+				gen->pop_temporary();
+			}
+			if (chain_root) {
+				gen->end_null_safe_chain(result);
 			}
 			return result;
 		} break;
@@ -786,18 +832,27 @@ GDScriptCodeGenerator::Address GDScriptCompiler::_parse_expression(CodeGen &code
 		// Indexing operator.
 		case GDScriptParser::Node::SUBSCRIPT: {
 			const GDScriptParser::SubscriptNode *subscript = static_cast<const GDScriptParser::SubscriptNode *>(p_expression);
+			const bool chain_root = !is_chain_link && GDScriptAnalyzer::expression_chain_has_null_safe(subscript);
+			if (chain_root) {
+				gen->start_null_safe_chain();
+			}
 			GDScriptCodeGenerator::Address result = codegen.add_temporary(_gdtype_from_datatype(subscript->get_datatype(), codegen.script));
 
+			compiling_chain_base = true;
 			GDScriptCodeGenerator::Address base = _parse_expression(codegen, r_error, subscript->base);
 			if (r_error) {
 				return GDScriptCodeGenerator::Address();
+			}
+
+			if (subscript->is_null_safe) {
+				gen->write_null_safe_guard(base);
 			}
 
 			bool named = subscript->is_attribute;
 			StringName name;
 			GDScriptCodeGenerator::Address index;
 			if (subscript->is_attribute) {
-				if (subscript->base->type == GDScriptParser::Node::SELF && codegen.script) {
+				if (!subscript->is_null_safe && subscript->base->type == GDScriptParser::Node::SELF && codegen.script) {
 					GDScriptParser::IdentifierNode *identifier = subscript->attribute;
 					HashMap<StringName, GDScript::MemberInfo>::Iterator MI = codegen.script->member_indices.find(identifier->name);
 
@@ -845,6 +900,10 @@ GDScriptCodeGenerator::Address GDScriptCompiler::_parse_expression(CodeGen &code
 			}
 			if (base.mode == GDScriptCodeGenerator::Address::TEMPORARY) {
 				gen->pop_temporary();
+			}
+
+			if (chain_root) {
+				gen->end_null_safe_chain(result);
 			}
 
 			return result;

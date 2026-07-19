@@ -1545,6 +1545,43 @@ void GDScriptByteCodeGenerator::write_end_jump_if_shared() {
 	if_jmp_addrs.pop_back();
 }
 
+void GDScriptByteCodeGenerator::start_null_safe_chain() {
+	null_safe_chain_jmp_addrs.push_back(List<int>());
+}
+
+void GDScriptByteCodeGenerator::write_null_safe_guard(const Address &p_base) {
+	ERR_FAIL_COND_MSG(null_safe_chain_jmp_addrs.is_empty(), "Compiler bug (please report): null-safe guard emitted outside a chain frame.");
+	append_opcode(GDScriptFunction::OPCODE_JUMP_IF_NULL_OR_FREED);
+	append(p_base);
+	null_safe_chain_jmp_addrs.back()->get().push_back(opcodes.size());
+	append(0); // Jump destination, will be patched.
+}
+
+void GDScriptByteCodeGenerator::end_null_safe_chain(const Address &p_result) {
+	ERR_FAIL_COND_MSG(null_safe_chain_jmp_addrs.is_empty(), "Compiler bug (please report): unbalanced null-safe chain frame.");
+	List<int> jumps = std::move(null_safe_chain_jmp_addrs.back()->get());
+	null_safe_chain_jmp_addrs.pop_back();
+
+	if (jumps.is_empty()) {
+		return;
+	}
+
+	// The successful path jumps over the landing pad.
+	append_opcode(GDScriptFunction::OPCODE_JUMP);
+	int success_jmp_addr = opcodes.size();
+	append(0); // Jump destination, will be patched.
+
+	// Tripped guards land here: the chain's result is null.
+	for (const int jump_addr : jumps) {
+		patch_jump(jump_addr);
+	}
+	if (p_result.mode != Address::NIL) {
+		write_assign_null(p_result);
+	}
+
+	patch_jump(success_jmp_addr);
+}
+
 void GDScriptByteCodeGenerator::start_for(const GDScriptDataType &p_iterator_type, const GDScriptDataType &p_list_type, bool p_is_range) {
 	Address counter(Address::LOCAL_VARIABLE, add_local("@counter_pos", p_iterator_type), p_iterator_type);
 

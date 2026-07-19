@@ -4226,7 +4226,47 @@ void GDScriptAnalyzer::reduce_call(GDScriptParser::CallNode *p_call, bool p_is_a
 		}
 	}
 
+	if (expression_chain_has_null_safe(p_call->callee)) {
+		// Any `?.` link in the chain can short-circuit the whole result to null.
+		apply_null_safe_result_type(call_type);
+	}
+
 	p_call->set_datatype(call_type);
+}
+
+bool GDScriptAnalyzer::expression_chain_has_null_safe(const GDScriptParser::ExpressionNode *p_node) {
+	// Walks a postfix chain (`a?.b().c[i]`...) looking for any `?.`/`?[` link.
+	while (p_node != nullptr) {
+		if (p_node->type == GDScriptParser::Node::SUBSCRIPT) {
+			const GDScriptParser::SubscriptNode *subscript = static_cast<const GDScriptParser::SubscriptNode *>(p_node);
+			if (subscript->is_null_safe) {
+				return true;
+			}
+			p_node = subscript->base;
+		} else if (p_node->type == GDScriptParser::Node::CALL) {
+			p_node = static_cast<const GDScriptParser::CallNode *>(p_node)->callee;
+		} else {
+			break;
+		}
+	}
+	return false;
+}
+
+void GDScriptAnalyzer::apply_null_safe_result_type(GDScriptParser::DataType &r_type) {
+	// An optional-chained expression (`?.`/`?[`) can yield null at runtime.
+	// Object types already admit null, so they stay hard; any other known type
+	// becomes a weak claim of itself instead of collapsing to Variant.
+	if (!r_type.is_set() || r_type.is_variant() || !r_type.is_hard_type() || r_type.is_meta_type) {
+		return;
+	}
+	switch (r_type.kind) {
+		case GDScriptParser::DataType::NATIVE:
+		case GDScriptParser::DataType::SCRIPT:
+		case GDScriptParser::DataType::CLASS:
+			return; // Object types can hold null; keep them hard.
+		default:
+			r_type.type_source = GDScriptParser::DataType::INFERRED;
+	}
 }
 
 void GDScriptAnalyzer::reduce_cast(GDScriptParser::CastNode *p_cast) {
@@ -5655,6 +5695,11 @@ void GDScriptAnalyzer::reduce_subscript(GDScriptParser::SubscriptNode *p_subscri
 				}
 			}
 		}
+	}
+
+	if (expression_chain_has_null_safe(p_subscript)) {
+		// Any `?.` link in the chain can short-circuit the whole result to null.
+		apply_null_safe_result_type(result_type);
 	}
 
 	p_subscript->set_datatype(result_type);
