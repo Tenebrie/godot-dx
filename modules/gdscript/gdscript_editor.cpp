@@ -1302,6 +1302,31 @@ static HashMap<int, String> _get_container_method_arg_type_overrides(const GDScr
 	return override_arg_types;
 }
 
+// The handler signature a signal expects, e.g. `func(mouse_button_index: int, event: InputEvent)`.
+// The handler's return value is ignored on emission, so no return type is shown.
+static String _get_signal_callable_type_text(const MethodInfo &p_signal_info) {
+	String args;
+	for (int64_t i = 0; i < p_signal_info.arguments.size(); i++) {
+		if (i > 0) {
+			args += ", ";
+		}
+		const PropertyInfo &arg = p_signal_info.arguments[i];
+		args += arg.name + ": " + _get_visual_datatype(arg, true);
+	}
+	return "func(" + args + ")";
+}
+
+// Argument-type text overrides for Signal methods taking the handler callable, so they show
+// the signal's expected handler signature rather than the declared `Callable`.
+static HashMap<int, String> _get_signal_method_arg_type_overrides(const GDScriptParser::DataType &p_base_type, const StringName &p_method) {
+	HashMap<int, String> override_arg_types;
+	if (p_base_type.builtin_type == Variant::SIGNAL && p_base_type.method_info.arguments.size() > 0 &&
+			(p_method == SNAME("connect") || p_method == SNAME("disconnect") || p_method == SNAME("is_connected"))) {
+		override_arg_types[0] = _get_signal_callable_type_text(p_base_type.method_info);
+	}
+	return override_arg_types;
+}
+
 static void _find_identifiers_in_suite(const GDScriptParser::SuiteNode *p_suite, HashMap<String, ScriptLanguage::CodeCompletionOption> &r_result, int p_recursion_depth = 0) {
 	for (int i = 0; i < p_suite->locals.size(); i++) {
 		ScriptLanguage::CodeCompletionOption option;
@@ -2926,6 +2951,20 @@ static bool _guess_identifier_type_from_base(GDScriptParser::CompletionContext &
 						return true;
 					}
 
+					if (scr->has_script_signal(p_identifier)) {
+						List<MethodInfo> script_signals;
+						scr->get_script_signal_list(&script_signals);
+						for (const MethodInfo &signal_info : script_signals) {
+							if (signal_info.name == p_identifier) {
+								r_type.type.type_source = GDScriptParser::DataType::ANNOTATED_EXPLICIT;
+								r_type.type.kind = GDScriptParser::DataType::BUILTIN;
+								r_type.type.builtin_type = Variant::SIGNAL;
+								r_type.type.method_info = signal_info;
+								return true;
+							}
+						}
+					}
+
 					Ref<Script> parent = scr->get_base_script();
 					if (parent.is_valid()) {
 						base_type.script_type = parent;
@@ -2964,6 +3003,15 @@ static bool _guess_identifier_type_from_base(GDScriptParser::CompletionContext &
 				MethodInfo method;
 				if (ClassDB::get_method_info(class_name, p_identifier, &method)) {
 					r_type = _callable_type_from_method_info(method);
+					return true;
+				}
+
+				MethodInfo signal_info;
+				if (ClassDB::get_signal(class_name, p_identifier, &signal_info)) {
+					r_type.type.type_source = GDScriptParser::DataType::ANNOTATED_EXPLICIT;
+					r_type.type.kind = GDScriptParser::DataType::BUILTIN;
+					r_type.type.builtin_type = Variant::SIGNAL;
+					r_type.type.method_info = signal_info;
 					return true;
 				}
 
@@ -3453,30 +3501,18 @@ static void _list_call_arguments(GDScriptParser::CompletionContext &p_context, c
 					r_arghint = _make_arguments_hint(mi, p_argidx);
 					return;
 				}
-				// For Signal.emit()/connect(), use the signal's declared parameter types for the hint.
+				// For Signal.emit()/connect()/disconnect()/is_connected(), use the signal's
+				// declared parameter types for the hint.
 				if (base_type.builtin_type == Variant::SIGNAL && base_type.method_info.arguments.size() > 0) {
 					if (method == SNAME("emit")) {
 						r_arghint = _make_arguments_hint(base_type.method_info, p_argidx);
 						return;
-					} else if (method == SNAME("connect")) {
-						// Build a hint that shows the signal's parameters in the lambda.
-						MethodInfo connect_mi;
-						connect_mi.name = "connect";
-
-						// First arg: Callable (show signal signature as context).
-						PropertyInfo callable_arg;
-						callable_arg.type = Variant::CALLABLE;
-						callable_arg.name = "callable";
-						connect_mi.arguments.push_back(callable_arg);
-
-						// Second arg: flags.
-						PropertyInfo flags_arg;
-						flags_arg.type = Variant::INT;
-						flags_arg.name = "flags";
-						connect_mi.arguments.push_back(flags_arg);
-						connect_mi.default_arguments.push_back(0);
-
-						r_arghint = _make_arguments_hint(connect_mi, p_argidx);
+					}
+					// Show the handler signature the signal expects instead of the
+					// generic `callable: Callable`.
+					const HashMap<int, String> signal_arg_overrides = _get_signal_method_arg_type_overrides(base_type, method);
+					if (!signal_arg_overrides.is_empty() && Variant::has_builtin_method(Variant::SIGNAL, method)) {
+						r_arghint = _make_arguments_hint(Variant::get_builtin_method_info(Variant::SIGNAL, method), p_argidx, false, signal_arg_overrides);
 						return;
 					}
 				}
@@ -4543,7 +4579,11 @@ static Error _lookup_symbol_from_base(const GDScriptParser::DataType &p_base, co
 					// Typed containers: expose the element-dependent signature so documentation
 					// tooltips can show e.g. `Node3D pop_back()` instead of `Variant pop_back()`.
 					r_result.method_return_type_override = _get_container_method_return_type_text(base_type, p_symbol);
-					const HashMap<int, String> arg_type_overrides = _get_container_method_arg_type_overrides(base_type, p_symbol);
+					HashMap<int, String> arg_type_overrides = _get_container_method_arg_type_overrides(base_type, p_symbol);
+					if (arg_type_overrides.is_empty()) {
+						// Signals: show the expected handler signature on connect()/disconnect()/is_connected().
+						arg_type_overrides = _get_signal_method_arg_type_overrides(base_type, p_symbol);
+					}
 					if (!arg_type_overrides.is_empty()) {
 						int max_arg_index = -1;
 						for (const KeyValue<int, String> &E : arg_type_overrides) {
