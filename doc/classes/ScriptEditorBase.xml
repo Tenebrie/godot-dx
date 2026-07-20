@@ -54,6 +54,15 @@
 				Emitted after script validation or when the edited resource has changed.
 			</description>
 		</signal>
+		<signal name="rename_symbol_requested">
+			<param index="0" name="symbol" type="String" />
+			<param index="1" name="line" type="int" />
+			<param index="2" name="column" type="int" />
+			<param index="3" name="new_name" type="String" />
+			<description>
+				Emitted when the user confirms a symbol rename. All references to [param symbol] at the given location should be renamed to [param new_name].
+			</description>
+		</signal>
 		<signal name="replace_in_files_requested">
 			<param index="0" name="text" type="String" />
 			<description>

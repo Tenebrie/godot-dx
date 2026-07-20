@@ -737,8 +737,22 @@ void FindInFilesPanel::stop_search() {
 	cancel_button->hide();
 }
 
-void FindInFilesPanel::add_result(const String &p_fpath, int p_line_number, int p_begin, int p_end, const String &p_text) {
+void FindInFilesPanel::add_result(const String &p_fpath, int p_line_number, int p_begin, int p_end, const String &p_text, bool p_unverified) {
 	_on_result_found(p_fpath, p_line_number, p_begin, p_end, p_text);
+	if (!p_unverified) {
+		return;
+	}
+	HashMap<String, TreeItem *>::Iterator E = file_items.find(p_fpath);
+	if (!E) {
+		return;
+	}
+	TreeItem *item = E->value->get_child(E->value->get_child_count() - 1);
+	if (item == nullptr) {
+		return;
+	}
+	const int text_index = with_replace ? 1 : 0;
+	item->set_custom_color(text_index, get_theme_color(SceneStringName(font_color)) * Color(1, 1, 1, 0.5));
+	item->set_tooltip_text(text_index, TTR("Unverified: this occurrence could not be proven to refer to the same symbol (dynamic access or string literal)."));
 }
 
 void FindInFilesPanel::clear_results(const String &p_search_text) {

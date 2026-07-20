@@ -226,7 +226,7 @@ public:
 
 	// Manually populate the panel with externally computed results (e.g. "Find All References"),
 	// bypassing the FindInFilesSearch text search.
-	void add_result(const String &p_fpath, int p_line_number, int p_begin, int p_end, const String &p_text);
+	void add_result(const String &p_fpath, int p_line_number, int p_begin, int p_end, const String &p_text, bool p_unverified = false);
 	void clear_results(const String &p_search_text);
 	void finish_adding_results();
 

@@ -384,6 +384,16 @@ class ScriptEditor : public PanelContainer {
 	Error _save_text_file(Ref<TextFile> p_text_file, const String &p_path);
 
 	void _on_find_all_references_requested(const String &p_symbol, int p_line, int p_column);
+	void _on_rename_symbol_requested(const String &p_symbol, int p_line, int p_column, const String &p_new_name);
+	HashMap<String, String> _gather_script_buffer_overrides() const;
+
+	void _apply_rename_edits(const Dictionary &p_journal, bool p_forward);
+	void _install_rename_interceptors(const Dictionary &p_journal);
+	void _clear_rename_interceptors();
+	void _rename_undo_intercept(const Ref<InputEvent> &p_event, Object *p_code_edit);
+	HashMap<ObjectID, Callable> rename_intercept_callables;
+	HashMap<ObjectID, uint64_t> rename_editor_versions;
+	String last_rename_action_name;
 	void _on_find_in_files_result_selected(const String &p_path, int p_line_number, int p_begin, int p_end);
 	void _on_find_in_files_modified_files();
 

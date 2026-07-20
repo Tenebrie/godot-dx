@@ -56,6 +56,7 @@
 #include "editor/editor_node.h"
 #include "editor/editor_string_names.h"
 #include "editor/file_system/editor_paths.h"
+#include "editor/editor_undo_redo_manager.h"
 #include "editor/gui/code_editor.h"
 #include "editor/gui/editor_file_dialog.h"
 #include "editor/gui/editor_toaster.h"
@@ -82,6 +83,11 @@
 #include "scene/main/scene_tree.h"
 #include "scene/main/window.h"
 #include "servers/display/display_server.h"
+
+#include "modules/modules_enabled.gen.h" // For gdscript.
+#ifdef MODULE_GDSCRIPT_ENABLED
+#include "modules/gdscript/gdscript_refactor.h"
+#endif
 
 void ScriptEditorQuickOpen::popup_dialog(const Vector<String> &p_functions, bool p_dontclear) {
 	popup_centered_ratio(0.6);
@@ -2420,6 +2426,7 @@ bool ScriptEditor::edit(const Ref<Resource> &p_resource, int p_line, int p_col, 
 		teb->connect("search_in_files_requested", callable_mp(this, &ScriptEditor::open_find_in_files_dialog).bind(false));
 		teb->connect("replace_in_files_requested", callable_mp(this, &ScriptEditor::open_find_in_files_dialog).bind(true));
 		teb->connect("find_all_references_requested", callable_mp(this, &ScriptEditor::_on_find_all_references_requested));
+		teb->connect("rename_symbol_requested", callable_mp(this, &ScriptEditor::_on_rename_symbol_requested));
 		teb->connect("go_to_method", callable_mp(this, &ScriptEditor::script_goto_method));
 
 		if (script_editor_cache->has_section(p_resource->get_path())) {
@@ -3822,6 +3829,364 @@ static void _collect_gd_files(const String &p_dir, List<String> &r_files) {
 	}
 }
 
+#ifdef MODULE_GDSCRIPT_ENABLED
+struct GDScriptOccurrenceSort {
+	bool operator()(const GDScriptRefactor::Occurrence &p_a, const GDScriptRefactor::Occurrence &p_b) const {
+		if (p_a.path != p_b.path) {
+			return p_a.path < p_b.path;
+		}
+		if (p_a.line != p_b.line) {
+			return p_a.line < p_b.line;
+		}
+		return p_a.start_column < p_b.start_column;
+	}
+};
+
+// Descending within a single file, so earlier edits don't shift later offsets.
+struct GDScriptOccurrenceReverseSort {
+	bool operator()(const GDScriptRefactor::Occurrence &p_a, const GDScriptRefactor::Occurrence &p_b) const {
+		if (p_a.line != p_b.line) {
+			return p_a.line > p_b.line;
+		}
+		return p_a.start_column > p_b.start_column;
+	}
+};
+#endif // MODULE_GDSCRIPT_ENABLED
+
+#ifdef MODULE_GDSCRIPT_ENABLED
+// Scene files store signal connections by name (`[connection signal="x" method="y"]`).
+// Renames can't safely rewrite these without resolving each connection's target
+// script, so they are surfaced for manual review instead.
+static void _scan_scene_connections(const String &p_dir, const String &p_symbol, Vector<GDScriptRefactor::Occurrence> &r_out) {
+	Ref<DirAccess> dir = DirAccess::open(p_dir);
+	if (dir.is_null()) {
+		return;
+	}
+	const String project_data_dir = ProjectSettings::get_singleton()->get_project_data_dir_name();
+	const String method_attr = "method=\"" + p_symbol + "\"";
+	const String signal_attr = "signal=\"" + p_symbol + "\"";
+
+	dir->list_dir_begin();
+	String file = dir->get_next();
+	while (!file.is_empty()) {
+		if (file.begins_with(".") || file == project_data_dir) {
+			file = dir->get_next();
+			continue;
+		}
+		const String path = p_dir.path_join(file);
+		if (dir->current_is_dir()) {
+			_scan_scene_connections(path, p_symbol, r_out);
+		} else if (file.get_extension() == "tscn") {
+			const String content = FileAccess::get_file_as_string(path);
+			if (content.contains(method_attr) || content.contains(signal_attr)) {
+				const Vector<String> lines = content.split("\n");
+				for (int i = 0; i < lines.size(); i++) {
+					int attr_pos = lines[i].find(method_attr);
+					if (attr_pos < 0) {
+						attr_pos = lines[i].find(signal_attr);
+					}
+					if (attr_pos < 0) {
+						continue;
+					}
+					GDScriptRefactor::Occurrence occ;
+					occ.path = path;
+					occ.line = i + 1;
+					occ.start_column = lines[i].find_char('"', attr_pos) + 1;
+					occ.end_column = occ.start_column + p_symbol.length();
+					occ.in_string = true;
+					occ.line_text = lines[i];
+					r_out.push_back(occ);
+				}
+			}
+		}
+		file = dir->get_next();
+	}
+}
+#endif // MODULE_GDSCRIPT_ENABLED
+
+HashMap<String, String> ScriptEditor::_gather_script_buffer_overrides() const {
+	HashMap<String, String> overrides;
+	for (int i = 0; i < tab_container->get_tab_count(); i++) {
+		TextEditorBase *teb = Object::cast_to<TextEditorBase>(tab_container->get_tab_control(i));
+		if (teb == nullptr) {
+			continue;
+		}
+		Ref<Resource> res = teb->get_edited_resource();
+		if (res.is_null()) {
+			continue;
+		}
+		const String path = res->get_path();
+		if (path.get_extension() != "gd" || path.contains("::")) {
+			continue;
+		}
+		CodeTextEditor *cte = teb->get_code_editor();
+		if (cte == nullptr || cte->get_text_editor() == nullptr) {
+			continue;
+		}
+		overrides[path] = cte->get_text_editor()->get_text();
+	}
+	return overrides;
+}
+
+void ScriptEditor::_on_rename_symbol_requested(const String &p_symbol, int p_line, int p_column, const String &p_new_name) {
+#ifdef MODULE_GDSCRIPT_ENABLED
+	TextEditorBase *current = Object::cast_to<TextEditorBase>(_get_current_editor());
+	if (current == nullptr) {
+		return;
+	}
+	Ref<Script> script = current->get_edited_resource();
+	if (script.is_null() || script->get_language() == nullptr || script->get_language()->get_name() != "GDScript") {
+		EditorToaster::get_singleton()->popup_str(TTR("Rename Symbol is only available for GDScript."), EditorToaster::SEVERITY_WARNING);
+		return;
+	}
+
+	const String new_name = p_new_name.strip_edges();
+	if (new_name.is_empty() || new_name == p_symbol) {
+		return;
+	}
+	if (!new_name.is_valid_unicode_identifier()) {
+		EditorToaster::get_singleton()->popup_str(vformat(TTR("\"%s\" is not a valid identifier."), new_name), EditorToaster::SEVERITY_WARNING);
+		return;
+	}
+	if (script->get_language()->get_reserved_words().has(new_name)) {
+		EditorToaster::get_singleton()->popup_str(vformat(TTR("\"%s\" is a reserved word."), new_name), EditorToaster::SEVERITY_WARNING);
+		return;
+	}
+
+	// Cross-file analysis resolves dependencies from disk; make disk match the
+	// editors before resolving.
+	save_all_scripts();
+
+	GDScriptRefactor::Result result;
+	const Error refactor_err = GDScriptRefactor::find_references(p_symbol, script->get_path(), p_line + 1, p_column, _gather_script_buffer_overrides(), result);
+	if (refactor_err != OK) {
+		EditorToaster::get_singleton()->popup_str(vformat(TTR("Could not resolve symbol \"%s\"."), p_symbol), EditorToaster::SEVERITY_WARNING);
+		return;
+	}
+	if (!result.origin_renamable) {
+		EditorToaster::get_singleton()->popup_str(vformat(TTR("\"%s\" resolves to an engine symbol and cannot be renamed."), p_symbol), EditorToaster::SEVERITY_WARNING);
+		return;
+	}
+
+	result.references.sort_custom<GDScriptOccurrenceSort>();
+
+	// The journal stores every occurrence at its pre-rename position; the edits
+	// are derivable in both directions from it, which makes the rename a single
+	// undoable action covering every touched file.
+	Dictionary files_dict;
+	for (const GDScriptRefactor::Occurrence &occ : result.references) {
+		if (!files_dict.has(occ.path)) {
+			files_dict[occ.path] = Array();
+		}
+		Array file_occurrences = files_dict[occ.path];
+		file_occurrences.push_back(Vector2i(occ.line, occ.start_column));
+	}
+	Dictionary journal;
+	journal["from"] = p_symbol;
+	journal["to"] = new_name;
+	journal["files"] = files_dict;
+
+	last_rename_action_name = vformat(TTR("Rename Symbol \"%s\" to \"%s\""), p_symbol, new_name);
+	_apply_rename_edits(journal, true);
+
+	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+	undo_redo->create_action_for_history(last_rename_action_name, EditorUndoRedoManager::GLOBAL_HISTORY);
+	undo_redo->add_do_method(this, "_apply_rename_edits", journal, true);
+	undo_redo->add_undo_method(this, "_apply_rename_edits", journal, false);
+	undo_redo->commit_action(false);
+
+	_scan_scene_connections("res://", p_symbol, result.unverified);
+
+	if (!result.unverified.is_empty()) {
+		result.unverified.sort_custom<GDScriptOccurrenceSort>();
+		FindInFilesPanel *panel = find_in_files->get_panel_for_results(TTR("Not renamed (review):") + " " + p_symbol);
+		panel->clear_results(p_symbol);
+		panel->set_with_replace(false);
+		for (const GDScriptRefactor::Occurrence &occ : result.unverified) {
+			panel->add_result(occ.path, occ.line, occ.start_column, occ.end_column, occ.line_text, true);
+		}
+		panel->finish_adding_results();
+		find_in_files->make_visible();
+	}
+#endif // MODULE_GDSCRIPT_ENABLED
+}
+
+void ScriptEditor::_apply_rename_edits(const Dictionary &p_journal, bool p_forward) {
+	const String from_name = p_forward ? String(p_journal["from"]) : String(p_journal["to"]);
+	const String to_name = p_forward ? String(p_journal["to"]) : String(p_journal["from"]);
+	const int shift = String(p_journal["to"]).length() - String(p_journal["from"]).length();
+	const Dictionary files = p_journal["files"];
+
+	_clear_rename_interceptors();
+
+	int renamed = 0;
+	int skipped = 0;
+	PackedStringArray modified_disk_files;
+
+	const Array paths = files.keys();
+	for (int path_index = 0; path_index < paths.size(); path_index++) {
+		const String path = paths[path_index];
+		const Array base_positions = files[path];
+
+		// Positions are stored in the pre-rename layout (ascending). In the
+		// renamed layout, occurrences after the first on the same line shift by
+		// the name-length delta.
+		Vector<Vector2i> occurrences;
+		int prev_line = -1;
+		int occurrence_on_line = 0;
+		for (int i = 0; i < base_positions.size(); i++) {
+			const Vector2i base = base_positions[i];
+			if (base.x != prev_line) {
+				prev_line = base.x;
+				occurrence_on_line = 0;
+			}
+			occurrences.push_back(Vector2i(base.x, p_forward ? base.y : base.y + shift * occurrence_on_line));
+			occurrence_on_line++;
+		}
+
+		CodeEdit *open_editor = nullptr;
+		for (int i = 0; i < tab_container->get_tab_count(); i++) {
+			TextEditorBase *teb = Object::cast_to<TextEditorBase>(tab_container->get_tab_control(i));
+			if (teb != nullptr && teb->get_edited_resource().is_valid() && teb->get_edited_resource()->get_path() == path && teb->get_code_editor() != nullptr) {
+				open_editor = teb->get_code_editor()->get_text_editor();
+				break;
+			}
+		}
+
+		Vector<String> file_lines;
+		bool changed = false;
+		if (open_editor == nullptr) {
+			const String content = FileAccess::get_file_as_string(path);
+			if (content.is_empty()) {
+				skipped += occurrences.size();
+				continue;
+			}
+			file_lines = content.split("\n");
+		} else {
+			open_editor->begin_complex_operation();
+		}
+
+		for (int i = occurrences.size() - 1; i >= 0; i--) {
+			const int line0 = occurrences[i].x - 1;
+			const int col = occurrences[i].y;
+			if (open_editor != nullptr) {
+				if (line0 >= open_editor->get_line_count() || open_editor->get_line(line0).substr(col, from_name.length()) != from_name) {
+					skipped++;
+					continue;
+				}
+				open_editor->remove_text(line0, col, line0, col + from_name.length());
+				open_editor->insert_text(to_name, line0, col);
+			} else {
+				if (line0 >= file_lines.size() || file_lines[line0].substr(col, from_name.length()) != from_name) {
+					skipped++;
+					continue;
+				}
+				const String line_text = file_lines[line0];
+				file_lines.write[line0] = line_text.left(col) + to_name + line_text.substr(col + from_name.length());
+				changed = true;
+			}
+			renamed++;
+		}
+
+		if (open_editor != nullptr) {
+			open_editor->end_complex_operation();
+		} else if (changed) {
+			Ref<FileAccess> f = FileAccess::open(path, FileAccess::WRITE);
+			if (f.is_valid()) {
+				f->store_string(String("\n").join(file_lines));
+				modified_disk_files.push_back(path);
+			} else {
+				skipped += occurrences.size();
+			}
+		}
+	}
+
+	if (!modified_disk_files.is_empty()) {
+		for (const String &path : modified_disk_files) {
+			EditorFileSystem::get_singleton()->update_file(path);
+		}
+		_on_find_in_files_modified_files();
+	}
+
+	String message;
+	if (p_forward) {
+		message = vformat(TTR("Renamed %d occurrences of \"%s\" to \"%s\" in %d files."), renamed, from_name, to_name, paths.size());
+	} else {
+		message = vformat(TTR("Reverted rename: \"%s\" restored to \"%s\" (%d occurrences in %d files)."), to_name, from_name, renamed, paths.size());
+	}
+	if (skipped > 0) {
+		message += " " + vformat(TTR("%d occurrences were skipped (text changed since the rename)."), skipped);
+	}
+	EditorToaster::get_singleton()->popup_str(message, EditorToaster::SEVERITY_INFO);
+
+	if (p_forward) {
+		_install_rename_interceptors(p_journal);
+	}
+}
+
+void ScriptEditor::_install_rename_interceptors(const Dictionary &p_journal) {
+	const Dictionary files = p_journal["files"];
+	const Array paths = files.keys();
+	for (int path_index = 0; path_index < paths.size(); path_index++) {
+		const String path = paths[path_index];
+		for (int i = 0; i < tab_container->get_tab_count(); i++) {
+			TextEditorBase *teb = Object::cast_to<TextEditorBase>(tab_container->get_tab_control(i));
+			if (teb == nullptr || teb->get_edited_resource().is_null() || teb->get_edited_resource()->get_path() != path || teb->get_code_editor() == nullptr) {
+				continue;
+			}
+			CodeEdit *te = teb->get_code_editor()->get_text_editor();
+			if (te == nullptr) {
+				continue;
+			}
+			const ObjectID id = te->get_instance_id();
+			const Callable interceptor = callable_mp(this, &ScriptEditor::_rename_undo_intercept).bind(te);
+			if (!te->is_connected(SceneStringName(gui_input), interceptor)) {
+				te->connect(SceneStringName(gui_input), interceptor);
+			}
+			rename_intercept_callables[id] = interceptor;
+			rename_editor_versions[id] = te->get_version();
+			break;
+		}
+	}
+}
+
+void ScriptEditor::_clear_rename_interceptors() {
+	for (const KeyValue<ObjectID, Callable> &E : rename_intercept_callables) {
+		Node *node = Object::cast_to<Node>(ObjectDB::get_instance(E.key));
+		if (node != nullptr && node->is_connected(SceneStringName(gui_input), E.value)) {
+			node->disconnect(SceneStringName(gui_input), E.value);
+		}
+	}
+	rename_intercept_callables.clear();
+	rename_editor_versions.clear();
+}
+
+// While a symbol rename is the newest change in a touched editor, Ctrl+Z there
+// undoes the whole multi-file rename instead of only the local file's part.
+// Any local edit after the rename invalidates the redirect for that file.
+void ScriptEditor::_rename_undo_intercept(const Ref<InputEvent> &p_event, Object *p_code_edit) {
+	if (p_event.is_null() || !p_event->is_action_pressed(SNAME("ui_undo"), false, true)) {
+		return;
+	}
+	CodeEdit *te = Object::cast_to<CodeEdit>(p_code_edit);
+	if (te == nullptr) {
+		return;
+	}
+	const uint64_t *version = rename_editor_versions.getptr(te->get_instance_id());
+	if (version == nullptr || te->get_version() != *version) {
+		return;
+	}
+	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+	UndoRedo *history = undo_redo->get_history_undo_redo(EditorUndoRedoManager::GLOBAL_HISTORY);
+	if (history == nullptr || history->get_current_action_name() != last_rename_action_name) {
+		return;
+	}
+	te->accept_event();
+	// Deferred: the undo rewrites this editor's text and detaches this handler,
+	// neither of which is safe mid-emission of its gui_input signal.
+	callable_mp(undo_redo, &EditorUndoRedoManager::undo_history).call_deferred(int(EditorUndoRedoManager::GLOBAL_HISTORY));
+}
+
 void ScriptEditor::_on_find_all_references_requested(const String &p_symbol, int p_line, int p_column) {
 	// Get current script and editor context.
 	TextEditorBase *current = Object::cast_to<TextEditorBase>(_get_current_editor());
@@ -3840,6 +4205,34 @@ void ScriptEditor::_on_find_all_references_requested(const String &p_symbol, int
 	}
 
 	ScriptLanguage *lang = script->get_language();
+
+#ifdef MODULE_GDSCRIPT_ENABLED
+	if (lang->get_name() == "GDScript") {
+		GDScriptRefactor::Result result;
+		const Error refactor_err = GDScriptRefactor::find_references(p_symbol, script->get_path(), p_line + 1, p_column, _gather_script_buffer_overrides(), result);
+		if (refactor_err != OK) {
+			EditorToaster::get_singleton()->popup_str(vformat(TTR("Could not resolve symbol \"%s\"."), p_symbol), EditorToaster::SEVERITY_WARNING);
+			return;
+		}
+
+		_scan_scene_connections("res://", p_symbol, result.unverified);
+		result.references.sort_custom<GDScriptOccurrenceSort>();
+		result.unverified.sort_custom<GDScriptOccurrenceSort>();
+
+		FindInFilesPanel *panel = find_in_files->get_panel_for_results(TTR("References:") + " " + p_symbol);
+		panel->clear_results(p_symbol);
+		panel->set_with_replace(false);
+		for (const GDScriptRefactor::Occurrence &occ : result.references) {
+			panel->add_result(occ.path, occ.line, occ.start_column, occ.end_column, occ.line_text);
+		}
+		for (const GDScriptRefactor::Occurrence &occ : result.unverified) {
+			panel->add_result(occ.path, occ.line, occ.start_column, occ.end_column, occ.line_text, true);
+		}
+		panel->finish_adding_results();
+		find_in_files->make_visible();
+		return;
+	}
+#endif // MODULE_GDSCRIPT_ENABLED
 
 	// Resolve the origin symbol to find its definition.
 	String origin_code = cte->get_text_editor()->get_text_with_cursor_char(p_line, p_column);
@@ -4066,6 +4459,7 @@ void ScriptEditor::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_unsaved_files"), &ScriptEditor::get_unsaved_files);
 
 	ClassDB::bind_method(D_METHOD("save_all_scripts"), &ScriptEditor::save_all_scripts);
+	ClassDB::bind_method(D_METHOD("_apply_rename_edits", "journal", "forward"), &ScriptEditor::_apply_rename_edits);
 	ClassDB::bind_method(D_METHOD("close_file", "path"), &ScriptEditor::close_file);
 
 	ADD_SIGNAL(MethodInfo("editor_script_changed", PropertyInfo(Variant::OBJECT, "script", PROPERTY_HINT_RESOURCE_TYPE, Script::get_class_static())));

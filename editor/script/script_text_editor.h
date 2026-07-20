@@ -82,6 +82,12 @@ class ScriptTextEditor : public CodeEditorBase {
 	ScriptEditorQuickOpen *quick_open = nullptr;
 	ConnectionInfoDialog *connection_info_dialog = nullptr;
 
+	ConfirmationDialog *rename_symbol_dialog = nullptr;
+	LineEdit *rename_symbol_edit = nullptr;
+	String rename_symbol_value;
+	int rename_symbol_line = 0;
+	int rename_symbol_column = 0;
+
 	int connection_gutter = -1;
 	void _gutter_clicked(int p_line, int p_gutter);
 	void _update_gutter_indexes();
@@ -118,6 +124,7 @@ class ScriptTextEditor : public CodeEditorBase {
 		HELP_CONTEXTUAL,
 		LOOKUP_SYMBOL,
 		FIND_ALL_REFERENCES,
+		RENAME_SYMBOL,
 	};
 
 	enum COLOR_MODE {
@@ -193,6 +200,8 @@ protected:
 	void _lookup_symbol(const String &p_symbol, int p_row, int p_column);
 	void _validate_symbol(const String &p_symbol);
 	void _find_all_references(const String &p_symbol, int p_line, int p_column);
+	void _rename_symbol_prompt(const String &p_symbol, int p_line, int p_column);
+	void _rename_symbol_confirmed();
 
 	void _show_symbol_tooltip(const String &p_symbol, int p_row, int p_column, bool p_shortcut = false);
 

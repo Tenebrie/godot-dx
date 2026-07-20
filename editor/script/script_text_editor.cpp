@@ -56,12 +56,18 @@
 #include "editor/settings/editor_settings.h"
 #include "editor/themes/editor_scale.h"
 #include "scene/gui/grid_container.h"
+#include "scene/gui/line_edit.h"
 #include "scene/gui/menu_button.h"
 #include "scene/gui/rich_text_label.h"
 #include "scene/gui/split_container.h"
 #include "scene/main/scene_tree.h"
 #include "scene/resources/style_box_flat.h"
 #include "servers/rendering/rendering_server.h"
+
+#include "modules/modules_enabled.gen.h" // For gdscript.
+#ifdef MODULE_GDSCRIPT_ENABLED
+#include "modules/gdscript/gdscript_refactor.h"
+#endif
 
 void ConnectionInfoDialog::ok_pressed() {
 }
@@ -192,6 +198,7 @@ ScriptTextEditor::EditMenusSTE::EditMenusSTE() {
 	_popup_move_item(SEARCH_GOTO_LINE, goto_menu->get_popup(), false);
 	goto_menu->get_popup()->add_shortcut(ED_GET_SHORTCUT("script_text_editor/goto_symbol"), LOOKUP_SYMBOL);
 	goto_menu->get_popup()->add_shortcut(ED_GET_SHORTCUT("script_text_editor/find_all_references"), FIND_ALL_REFERENCES);
+	goto_menu->get_popup()->add_shortcut(ED_GET_SHORTCUT("script_text_editor/rename_symbol"), RENAME_SYMBOL);
 	_popup_move_item(SEARCH_GOTO_LINE, goto_menu->get_popup());
 
 	edit_menu_fold->add_shortcut(ED_GET_SHORTCUT("script_text_editor/create_code_region"), EDIT_CREATE_CODE_REGION);
@@ -1206,7 +1213,14 @@ void ScriptTextEditor::_lookup_symbol(const String &p_symbol, int p_row, int p_c
 	String code_text = code_editor->get_text_editor()->get_text_with_cursor_char(p_row, p_column);
 	Error lc_error = script->get_language()->lookup_code(code_text, p_symbol, script->get_path(), base, result);
 	if (ScriptServer::is_global_class(p_symbol)) {
-		EditorNode::get_singleton()->load_resource(ScriptServer::get_global_class_path(p_symbol));
+		const String class_path = ScriptServer::get_global_class_path(p_symbol);
+		if (class_path == script->get_path()) {
+			// Already inside this class; "jumping" to the same file would be a
+			// no-op, so show the class's references instead.
+			_find_all_references(p_symbol, p_row, p_column);
+		} else {
+			EditorNode::get_singleton()->load_resource(class_path);
+		}
 	} else if (p_symbol.is_resource_file() || p_symbol.begins_with("uid://")) {
 		if (DirAccess::dir_exists_absolute(p_symbol)) {
 			FileSystemDock::get_singleton()->navigate_to_path(p_symbol);
@@ -1294,7 +1308,10 @@ void ScriptTextEditor::_lookup_symbol(const String &p_symbol, int p_row, int p_c
 			// In that case, fall back to Find All References instead.
 			bool is_same_location = false;
 			if (result.script.is_valid()) {
-				is_same_location = (result.script->get_path() == script->get_path() && result.location - 1 == p_row);
+				// Class lookups report location 0, so a class resolving to the
+				// current script is always "its own definition" (e.g. clicking
+				// the `class_name` identifier).
+				is_same_location = (result.script->get_path() == script->get_path() && (result.location - 1 == p_row || result.type == ScriptLanguage::LOOKUP_RESULT_CLASS));
 			} else {
 				is_same_location = (result.location - 1 == p_row);
 			}
@@ -1325,6 +1342,59 @@ void ScriptTextEditor::_lookup_symbol(const String &p_symbol, int p_row, int p_c
 
 void ScriptTextEditor::_find_all_references(const String &p_symbol, int p_line, int p_column) {
 	emit_signal(SNAME("find_all_references_requested"), p_symbol, p_line, p_column);
+}
+
+void ScriptTextEditor::_rename_symbol_prompt(const String &p_symbol, int p_line, int p_column) {
+	// Numbers, operators and keywords are not renamable tokens.
+	if (!p_symbol.is_valid_unicode_identifier()) {
+		return;
+	}
+	Ref<Script> script = edited_res;
+	if (script.is_null() || script->get_language() == nullptr || script->get_language()->get_name() != "GDScript") {
+		EditorToaster::get_singleton()->popup_str(TTR("Rename Symbol is only available for GDScript."), EditorToaster::SEVERITY_WARNING);
+		return;
+	}
+	if (script->get_language()->get_reserved_words().has(p_symbol)) {
+		return;
+	}
+#ifdef MODULE_GDSCRIPT_ENABLED
+	bool renamable = false;
+	const Error resolve_err = GDScriptRefactor::resolve_symbol_at(p_symbol, script->get_path(), p_line + 1, p_column, code_editor->get_text_editor()->get_text(), renamable);
+	if (resolve_err != OK) {
+		EditorToaster::get_singleton()->popup_str(vformat(TTR("Cannot rename \"%s\": the symbol could not be resolved."), p_symbol), EditorToaster::SEVERITY_WARNING);
+		return;
+	}
+	if (!renamable) {
+		EditorToaster::get_singleton()->popup_str(vformat(TTR("Cannot rename \"%s\": engine symbols cannot be renamed."), p_symbol), EditorToaster::SEVERITY_WARNING);
+		return;
+	}
+#endif // MODULE_GDSCRIPT_ENABLED
+
+	if (rename_symbol_dialog == nullptr) {
+		rename_symbol_dialog = memnew(ConfirmationDialog);
+		rename_symbol_dialog->set_ok_button_text(TTR("Rename"));
+		VBoxContainer *vbc = memnew(VBoxContainer);
+		rename_symbol_dialog->add_child(vbc);
+		rename_symbol_edit = memnew(LineEdit);
+		rename_symbol_edit->set_custom_minimum_size(Size2(250 * EDSCALE, 0));
+		rename_symbol_edit->set_accessibility_name(TTRC("New Name"));
+		vbc->add_child(rename_symbol_edit);
+		rename_symbol_dialog->register_text_enter(rename_symbol_edit);
+		rename_symbol_dialog->connect(SceneStringName(confirmed), callable_mp(this, &ScriptTextEditor::_rename_symbol_confirmed));
+		add_child(rename_symbol_dialog);
+	}
+	rename_symbol_value = p_symbol;
+	rename_symbol_line = p_line;
+	rename_symbol_column = p_column;
+	rename_symbol_dialog->set_title(vformat(TTR("Rename \"%s\""), p_symbol));
+	rename_symbol_edit->set_text(p_symbol);
+	rename_symbol_edit->select_all();
+	rename_symbol_dialog->popup_centered(Size2(300, 100) * EDSCALE);
+	rename_symbol_edit->grab_focus();
+}
+
+void ScriptTextEditor::_rename_symbol_confirmed() {
+	emit_signal(SNAME("rename_symbol_requested"), rename_symbol_value, rename_symbol_line, rename_symbol_column, rename_symbol_edit->get_text());
 }
 
 void ScriptTextEditor::_validate_symbol(const String &p_symbol) {
@@ -1896,6 +1966,12 @@ bool ScriptTextEditor::_edit_option(int p_op) {
 			}
 			if (!text.is_empty()) {
 				_find_all_references(text, tx->get_caret_line(0), tx->get_caret_column(0));
+			}
+		} break;
+		case RENAME_SYMBOL: {
+			const String text = tx->get_word_under_caret(0);
+			if (!text.is_empty()) {
+				_rename_symbol_prompt(text, tx->get_caret_line(0), tx->get_caret_column(0));
 			}
 		} break;
 		default: {
@@ -2640,6 +2716,7 @@ void ScriptTextEditor::_make_context_menu(bool p_selection, bool p_color, bool p
 		if (p_open_docs) {
 			context_menu->add_shortcut(ED_GET_SHORTCUT("script_text_editor/goto_symbol"), LOOKUP_SYMBOL);
 			context_menu->add_shortcut(ED_GET_SHORTCUT("script_text_editor/find_all_references"), FIND_ALL_REFERENCES);
+			context_menu->add_shortcut(ED_GET_SHORTCUT("script_text_editor/rename_symbol"), RENAME_SYMBOL);
 		}
 		if (p_color) {
 			context_menu->add_item(TTRC("Pick Color"), EDIT_PICK_COLOR);
@@ -2713,6 +2790,7 @@ void ScriptTextEditor::register_editor() {
 	ED_SHORTCUT_OVERRIDE("script_text_editor/goto_line", "macos", KeyModifierMask::CMD_OR_CTRL | Key::L);
 	ED_SHORTCUT("script_text_editor/goto_symbol", TTRC("Lookup Symbol"));
 	ED_SHORTCUT("script_text_editor/find_all_references", TTRC("Find All References"), KeyModifierMask::SHIFT | Key::F12);
+	ED_SHORTCUT("script_text_editor/rename_symbol", TTRC("Rename Symbol..."), Key::F2);
 
 	ED_SHORTCUT("script_text_editor/toggle_breakpoint", TTRC("Toggle Breakpoint"), Key::F9);
 	ED_SHORTCUT_OVERRIDE("script_text_editor/toggle_breakpoint", "macos", KeyModifierMask::META | KeyModifierMask::SHIFT | Key::B);
