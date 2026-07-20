@@ -4880,6 +4880,19 @@ static Error _lookup_symbol_from_base(const GDScriptParser::DataType &p_base, co
 				return OK;
 			}
 
+			// Outer classes are visible from nested classes (sibling nested types,
+			// constants, static members) but are not part of the inheritance
+			// chain, so they need their own walk.
+			{
+				GDScriptParser::ClassNode *outer = context.current_class->outer;
+				while (outer != nullptr) {
+					if (_lookup_symbol_from_base(outer->get_datatype(), p_symbol, r_result) == OK) {
+						return OK;
+					}
+					outer = outer->outer;
+				}
+			}
+
 			if (!is_function) {
 				if (ProjectSettings::get_singleton()->has_autoload(p_symbol)) {
 					const ProjectSettings::AutoloadInfo &autoload = ProjectSettings::get_singleton()->get_autoload(p_symbol);
