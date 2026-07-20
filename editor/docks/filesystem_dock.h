@@ -249,6 +249,7 @@ private:
 	int history_max_size;
 
 	String current_path = "res://";
+	uint64_t last_explicit_reveal_frame = 0;
 	String select_after_scan;
 	String main_scene_path;
 
@@ -423,6 +424,7 @@ public:
 	String get_folder_path_at_mouse_position() const;
 
 	void navigate_to_path(const String &p_path);
+	void reveal_path(const String &p_path, bool p_explicit = false);
 	void focus_on_path();
 	void focus_on_filter();
 	void create_directory(const String &p_path, const String &p_base_dir);

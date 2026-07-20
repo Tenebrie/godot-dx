@@ -727,6 +727,7 @@ void EditorSettings::_load_defaults(Ref<ConfigFile> p_extra_config) {
 	// FileSystem
 	EDITOR_SETTING(Variant::INT, PROPERTY_HINT_RANGE, "docks/filesystem/thumbnail_size", 64, "32,128,16")
 	_initial_set("docks/filesystem/always_show_folders", true);
+	_initial_set("docks/filesystem/auto_reveal_current_file", true);
 	_initial_set("docks/filesystem/textfile_extensions", "txt,md,cfg,ini,log,json,yml,yaml,toml,xml");
 	_initial_set("docks/filesystem/other_file_extensions", "ico,icns");
 	_initial_set("docks/filesystem/automatically_open_created_scripts", true);

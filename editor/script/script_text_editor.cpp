@@ -1226,6 +1226,7 @@ void ScriptTextEditor::_lookup_symbol(const String &p_symbol, int p_row, int p_c
 			FileSystemDock::get_singleton()->navigate_to_path(p_symbol);
 		} else {
 			EditorNode::get_singleton()->load_scene_or_resource(p_symbol);
+			FileSystemDock::get_singleton()->reveal_path(p_symbol, true);
 		}
 	} else if (lc_error == OK) {
 		goto_line_without_history(p_row, p_column);

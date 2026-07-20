@@ -287,6 +287,9 @@
 		<member name="docks/filesystem/ask_before_moving_files" type="bool" setter="" getter="">
 			If [code]true[/code], displays a confirmation dialog when moving or duplicating items in the FileSystem dock. This dialog can also be bypassed by holding [kbd]Shift[/kbd].
 		</member>
+		<member name="docks/filesystem/auto_reveal_current_file" type="bool" setter="" getter="">
+			If [code]true[/code], the FileSystem dock scrolls to and selects the file you navigate to (switching script tabs, opening scenes, following [code]res://[/code] links), without taking focus. Disable to keep the dock's selection independent of navigation.
+		</member>
 		<member name="docks/filesystem/automatically_open_created_scripts" type="bool" setter="" getter="">
 			If [code]true[/code], scripts created in FileSystem dock will be automatically edited.
 		</member>

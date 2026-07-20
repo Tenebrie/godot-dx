@@ -4786,6 +4786,9 @@ void EditorNode::_set_current_scene_nocheck(int p_idx, bool p_ignore_state) {
 	}
 
 	SceneTreeDock::get_singleton()->set_edited_scene(new_scene);
+	if (FileSystemDock::get_singleton() != nullptr && !scene_path.is_empty()) {
+		FileSystemDock::get_singleton()->reveal_path(scene_path);
+	}
 	if (get_tree()) {
 		get_tree()->set_edited_scene_root(new_scene);
 	}
@@ -5543,6 +5546,9 @@ void EditorNode::_update_recent_scenes() {
 
 void EditorNode::_quick_opened(const String &p_file_path) {
 	load_scene_or_resource(p_file_path);
+	if (FileSystemDock::get_singleton() != nullptr) {
+		FileSystemDock::get_singleton()->reveal_path(p_file_path, true);
+	}
 }
 
 void EditorNode::_project_run_started() {

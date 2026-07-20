@@ -30,6 +30,7 @@
 
 #include "filesystem_dock.h"
 
+#include "core/config/engine.h"
 #include "core/config/project_settings.h"
 #include "core/input/input.h"
 #include "core/io/dir_access.h"
@@ -873,6 +874,45 @@ bool FileSystemDock::_update_filtered_items(TreeItem *p_tree_item) {
 	}
 	item->set_visible(keep_visible);
 	return keep_visible;
+}
+
+// Passive variant of `navigate_to_path`: selects and scrolls to the path so
+// the user can see where it lives, but never pops the dock forward, grabs
+// focus, or fights an active search filter.
+void FileSystemDock::reveal_path(const String &p_path, bool p_explicit) {
+	if (!bool(EDITOR_GET("docks/filesystem/auto_reveal_current_file"))) {
+		return;
+	}
+	String path = p_path;
+	if (path.begins_with("uid://")) {
+		const ResourceUID::ID id = ResourceUID::get_singleton()->text_to_id(path);
+		if (id == ResourceUID::INVALID_ID || !ResourceUID::get_singleton()->has_id(id)) {
+			return;
+		}
+		path = ResourceUID::get_singleton()->get_id_path(id);
+	}
+	if (!path.begins_with("res://") || path.contains("::")) {
+		return;
+	}
+	if (!searched_tokens.is_empty()) {
+		return;
+	}
+	// An explicit navigation (quick open, ctrl+click on a path) names the file
+	// the user actually asked for; side-effect reveals that follow it — like the
+	// script editor restoring the opened scene's script tab — must not override
+	// it, including deferred ones a few frames later.
+	const uint64_t frame = Engine::get_singleton()->get_process_frames();
+	if (p_explicit) {
+		last_explicit_reveal_frame = frame;
+	} else {
+		if (frame <= last_explicit_reveal_frame + 3) {
+			return;
+		}
+		if (path == current_path) {
+			return;
+		}
+	}
+	_navigate_to_path(path);
 }
 
 void FileSystemDock::navigate_to_path(const String &p_path) {

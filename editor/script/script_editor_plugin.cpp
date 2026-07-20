@@ -482,6 +482,13 @@ void ScriptEditor::_go_to_tab(int p_idx, bool p_save_history) {
 		}
 
 		seb->validate_script();
+
+		if (FileSystemDock::get_singleton() != nullptr) {
+			Ref<Resource> res = seb->get_edited_resource();
+			if (res.is_valid()) {
+				FileSystemDock::get_singleton()->reveal_path(res->get_path());
+			}
+		}
 	}
 
 	if (EditorHelp *eh = Object::cast_to<EditorHelp>(c)) {

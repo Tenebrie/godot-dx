@@ -690,8 +690,14 @@ void EditorInterface::inspect_object(Object *p_obj, const String &p_for_property
 	EditorNode::get_singleton()->push_item(p_obj, p_for_property, p_inspector_only);
 }
 
+// These are only reachable from plugins and scripts (internal editor code calls
+// EditorNode/ScriptEditor directly), so a call here is user-initiated navigation
+// as far as the FileSystem dock's auto-reveal is concerned.
 void EditorInterface::edit_resource(const Ref<Resource> &p_resource) {
 	EditorNode::get_singleton()->edit_resource(p_resource);
+	if (FileSystemDock::get_singleton() != nullptr && p_resource.is_valid()) {
+		FileSystemDock::get_singleton()->reveal_path(p_resource->get_path(), true);
+	}
 }
 
 void EditorInterface::edit_node(Node *p_node) {
@@ -700,6 +706,9 @@ void EditorInterface::edit_node(Node *p_node) {
 
 void EditorInterface::edit_script(const Ref<Script> &p_script, int p_line, int p_col, bool p_grab_focus) {
 	ScriptEditor::get_singleton()->edit(p_script, p_line - 1, p_col - 1, p_grab_focus);
+	if (FileSystemDock::get_singleton() != nullptr && p_script.is_valid()) {
+		FileSystemDock::get_singleton()->reveal_path(p_script->get_path(), true);
+	}
 }
 
 void EditorInterface::open_scene_from_path(const String &scene_path, bool p_set_inherited) {
@@ -707,6 +716,9 @@ void EditorInterface::open_scene_from_path(const String &scene_path, bool p_set_
 		return;
 	}
 	EditorNode::get_singleton()->open_scene(scene_path, false, p_set_inherited);
+	if (FileSystemDock::get_singleton() != nullptr) {
+		FileSystemDock::get_singleton()->reveal_path(scene_path, true);
+	}
 }
 
 void EditorInterface::reload_scene_from_path(const String &scene_path) {
