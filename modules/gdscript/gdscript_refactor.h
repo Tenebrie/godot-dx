@@ -33,6 +33,7 @@
 #ifdef TOOLS_ENABLED
 
 #include "core/error/error_list.h"
+#include "core/object/script_language.h"
 #include "core/string/ustring.h"
 #include "core/templates/hash_map.h"
 #include "core/templates/vector.h"
@@ -42,17 +43,14 @@
 // are matched by a declaration key (defining class fqcn + member name, or
 // declaration position for locals), so results do not depend on line numbers
 // staying in sync between editor buffers and disk.
+//
+// The editor reaches this through the `ScriptLanguage::find_symbol_references`
+// virtual (implemented on `GDScriptLanguage`), never by linking against this
+// class directly: `libeditor` precedes the module archives on the link line,
+// so a direct editor -> module symbol reference would not resolve.
 class GDScriptRefactor {
 public:
-	struct Occurrence {
-		String path;
-		int line = 0; // 1-based.
-		int start_column = 0; // 0-based index into the line's text.
-		int end_column = 0; // Exclusive.
-		bool is_declaration = false;
-		bool in_string = false;
-		String line_text;
-	};
+	using Occurrence = ScriptLanguage::SymbolReference;
 
 	struct Result {
 		// Occurrences proven to resolve to the origin symbol's declaration(s).

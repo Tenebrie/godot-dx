@@ -600,6 +600,8 @@ public:
 	virtual String make_function(const String &p_class, const String &p_name, const PackedStringArray &p_args) const override;
 #ifdef TOOLS_ENABLED
 	virtual Error lookup_code(const String &p_code, const String &p_symbol, const String &p_path, Object *p_owner, LookupResult &r_result) override;
+	virtual Error find_symbol_references(const String &p_symbol, const String &p_origin_path, int p_origin_line, int p_origin_column, const HashMap<String, String> &p_buffer_overrides, SymbolReferencesResult &r_result) override;
+	virtual Error resolve_symbol_at(const String &p_symbol, const String &p_path, int p_line, int p_column, const String &p_content, bool &r_renamable) override;
 #endif
 	virtual String _get_indentation() const;
 	virtual void auto_indent_code(String &p_code, int p_from_line, int p_to_line) const override;

@@ -421,6 +421,36 @@ public:
 
 	virtual Error lookup_code(const String &p_code, const String &p_symbol, const String &p_path, Object *p_owner, LookupResult &r_result) { return ERR_UNAVAILABLE; }
 
+	struct SymbolReference {
+		String path;
+		int line = 0; // 1-based.
+		int start_column = 0; // 0-based index into the line's text.
+		int end_column = 0; // Exclusive.
+		bool is_declaration = false;
+		bool in_string = false;
+		String line_text;
+	};
+
+	struct SymbolReferencesResult {
+		// Occurrences proven to resolve to the origin symbol's declaration(s).
+		Vector<SymbolReference> references;
+		// Same-word occurrences that could not be proven or refuted; never safe
+		// to rename automatically.
+		Vector<SymbolReference> unverified;
+		// False when the origin resolves to an engine symbol (or an override of
+		// an engine virtual), which script refactoring cannot rename.
+		bool origin_renamable = false;
+	};
+
+	// p_buffer_overrides maps paths to unsaved editor content; files not present
+	// are read from disk. Line is 1-based, column is a 0-based character index
+	// anywhere within the symbol occurrence.
+	virtual Error find_symbol_references(const String &p_symbol, const String &p_origin_path, int p_origin_line, int p_origin_column, const HashMap<String, String> &p_buffer_overrides, SymbolReferencesResult &r_result) { return ERR_UNAVAILABLE; }
+	// Cheap single-file resolution for pre-flight checks (e.g. whether a rename
+	// dialog should open). Returns ERR_CANT_RESOLVE when the position holds no
+	// resolvable symbol.
+	virtual Error resolve_symbol_at(const String &p_symbol, const String &p_path, int p_line, int p_column, const String &p_content, bool &r_renamable) { return ERR_UNAVAILABLE; }
+
 	virtual void auto_indent_code(String &p_code, int p_from_line, int p_to_line) const = 0;
 	virtual void add_global_constant(const StringName &p_variable, const Variant &p_value) = 0;
 	virtual void add_named_global_constant(const StringName &p_name, const Variant &p_value) {}

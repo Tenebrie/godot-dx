@@ -1172,4 +1172,20 @@ Error GDScriptRefactor::resolve_symbol_at(const String &p_symbol, const String &
 	return ERR_CANT_RESOLVE;
 }
 
+Error GDScriptLanguage::find_symbol_references(const String &p_symbol, const String &p_origin_path, int p_origin_line, int p_origin_column, const HashMap<String, String> &p_buffer_overrides, SymbolReferencesResult &r_result) {
+	GDScriptRefactor::Result result;
+	const Error err = GDScriptRefactor::find_references(p_symbol, p_origin_path, p_origin_line, p_origin_column, p_buffer_overrides, result);
+	if (err != OK) {
+		return err;
+	}
+	r_result.references = result.references;
+	r_result.unverified = result.unverified;
+	r_result.origin_renamable = result.origin_renamable;
+	return OK;
+}
+
+Error GDScriptLanguage::resolve_symbol_at(const String &p_symbol, const String &p_path, int p_line, int p_column, const String &p_content, bool &r_renamable) {
+	return GDScriptRefactor::resolve_symbol_at(p_symbol, p_path, p_line, p_column, p_content, r_renamable);
+}
+
 #endif // TOOLS_ENABLED

@@ -84,11 +84,6 @@
 #include "scene/main/window.h"
 #include "servers/display/display_server.h"
 
-#include "modules/modules_enabled.gen.h" // For gdscript.
-#ifdef MODULE_GDSCRIPT_ENABLED
-#include "modules/gdscript/gdscript_refactor.h"
-#endif
-
 void ScriptEditorQuickOpen::popup_dialog(const Vector<String> &p_functions, bool p_dontclear) {
 	popup_centered_ratio(0.6);
 	if (p_dontclear) {
@@ -3836,9 +3831,8 @@ static void _collect_gd_files(const String &p_dir, List<String> &r_files) {
 	}
 }
 
-#ifdef MODULE_GDSCRIPT_ENABLED
-struct GDScriptOccurrenceSort {
-	bool operator()(const GDScriptRefactor::Occurrence &p_a, const GDScriptRefactor::Occurrence &p_b) const {
+struct SymbolReferenceSort {
+	bool operator()(const ScriptLanguage::SymbolReference &p_a, const ScriptLanguage::SymbolReference &p_b) const {
 		if (p_a.path != p_b.path) {
 			return p_a.path < p_b.path;
 		}
@@ -3849,22 +3843,10 @@ struct GDScriptOccurrenceSort {
 	}
 };
 
-// Descending within a single file, so earlier edits don't shift later offsets.
-struct GDScriptOccurrenceReverseSort {
-	bool operator()(const GDScriptRefactor::Occurrence &p_a, const GDScriptRefactor::Occurrence &p_b) const {
-		if (p_a.line != p_b.line) {
-			return p_a.line > p_b.line;
-		}
-		return p_a.start_column > p_b.start_column;
-	}
-};
-#endif // MODULE_GDSCRIPT_ENABLED
-
-#ifdef MODULE_GDSCRIPT_ENABLED
 // Scene files store signal connections by name (`[connection signal="x" method="y"]`).
 // Renames can't safely rewrite these without resolving each connection's target
 // script, so they are surfaced for manual review instead.
-static void _scan_scene_connections(const String &p_dir, const String &p_symbol, Vector<GDScriptRefactor::Occurrence> &r_out) {
+static void _scan_scene_connections(const String &p_dir, const String &p_symbol, Vector<ScriptLanguage::SymbolReference> &r_out) {
 	Ref<DirAccess> dir = DirAccess::open(p_dir);
 	if (dir.is_null()) {
 		return;
@@ -3895,7 +3877,7 @@ static void _scan_scene_connections(const String &p_dir, const String &p_symbol,
 					if (attr_pos < 0) {
 						continue;
 					}
-					GDScriptRefactor::Occurrence occ;
+					ScriptLanguage::SymbolReference occ;
 					occ.path = path;
 					occ.line = i + 1;
 					occ.start_column = lines[i].find_char('"', attr_pos) + 1;
@@ -3909,7 +3891,6 @@ static void _scan_scene_connections(const String &p_dir, const String &p_symbol,
 		file = dir->get_next();
 	}
 }
-#endif // MODULE_GDSCRIPT_ENABLED
 
 HashMap<String, String> ScriptEditor::_gather_script_buffer_overrides() const {
 	HashMap<String, String> overrides;
@@ -3936,14 +3917,12 @@ HashMap<String, String> ScriptEditor::_gather_script_buffer_overrides() const {
 }
 
 void ScriptEditor::_on_rename_symbol_requested(const String &p_symbol, int p_line, int p_column, const String &p_new_name) {
-#ifdef MODULE_GDSCRIPT_ENABLED
 	TextEditorBase *current = Object::cast_to<TextEditorBase>(_get_current_editor());
 	if (current == nullptr) {
 		return;
 	}
 	Ref<Script> script = current->get_edited_resource();
-	if (script.is_null() || script->get_language() == nullptr || script->get_language()->get_name() != "GDScript") {
-		EditorToaster::get_singleton()->popup_str(TTR("Rename Symbol is only available for GDScript."), EditorToaster::SEVERITY_WARNING);
+	if (script.is_null() || script->get_language() == nullptr) {
 		return;
 	}
 
@@ -3964,8 +3943,12 @@ void ScriptEditor::_on_rename_symbol_requested(const String &p_symbol, int p_lin
 	// editors before resolving.
 	save_all_scripts();
 
-	GDScriptRefactor::Result result;
-	const Error refactor_err = GDScriptRefactor::find_references(p_symbol, script->get_path(), p_line + 1, p_column, _gather_script_buffer_overrides(), result);
+	ScriptLanguage::SymbolReferencesResult result;
+	const Error refactor_err = script->get_language()->find_symbol_references(p_symbol, script->get_path(), p_line + 1, p_column, _gather_script_buffer_overrides(), result);
+	if (refactor_err == ERR_UNAVAILABLE) {
+		EditorToaster::get_singleton()->popup_str(TTR("Rename Symbol is not supported for this script language."), EditorToaster::SEVERITY_WARNING);
+		return;
+	}
 	if (refactor_err != OK) {
 		EditorToaster::get_singleton()->popup_str(vformat(TTR("Could not resolve symbol \"%s\"."), p_symbol), EditorToaster::SEVERITY_WARNING);
 		return;
@@ -3975,13 +3958,13 @@ void ScriptEditor::_on_rename_symbol_requested(const String &p_symbol, int p_lin
 		return;
 	}
 
-	result.references.sort_custom<GDScriptOccurrenceSort>();
+	result.references.sort_custom<SymbolReferenceSort>();
 
 	// The journal stores every occurrence at its pre-rename position; the edits
 	// are derivable in both directions from it, which makes the rename a single
 	// undoable action covering every touched file.
 	Dictionary files_dict;
-	for (const GDScriptRefactor::Occurrence &occ : result.references) {
+	for (const ScriptLanguage::SymbolReference &occ : result.references) {
 		if (!files_dict.has(occ.path)) {
 			files_dict[occ.path] = Array();
 		}
@@ -4005,17 +3988,16 @@ void ScriptEditor::_on_rename_symbol_requested(const String &p_symbol, int p_lin
 	_scan_scene_connections("res://", p_symbol, result.unverified);
 
 	if (!result.unverified.is_empty()) {
-		result.unverified.sort_custom<GDScriptOccurrenceSort>();
+		result.unverified.sort_custom<SymbolReferenceSort>();
 		FindInFilesPanel *panel = find_in_files->get_panel_for_results(TTR("Not renamed (review):") + " " + p_symbol);
 		panel->clear_results(p_symbol);
 		panel->set_with_replace(false);
-		for (const GDScriptRefactor::Occurrence &occ : result.unverified) {
+		for (const ScriptLanguage::SymbolReference &occ : result.unverified) {
 			panel->add_result(occ.path, occ.line, occ.start_column, occ.end_column, occ.line_text, true);
 		}
 		panel->finish_adding_results();
 		find_in_files->make_visible();
 	}
-#endif // MODULE_GDSCRIPT_ENABLED
 }
 
 void ScriptEditor::_apply_rename_edits(const Dictionary &p_journal, bool p_forward) {
@@ -4213,33 +4195,31 @@ void ScriptEditor::_on_find_all_references_requested(const String &p_symbol, int
 
 	ScriptLanguage *lang = script->get_language();
 
-#ifdef MODULE_GDSCRIPT_ENABLED
-	if (lang->get_name() == "GDScript") {
-		GDScriptRefactor::Result result;
-		const Error refactor_err = GDScriptRefactor::find_references(p_symbol, script->get_path(), p_line + 1, p_column, _gather_script_buffer_overrides(), result);
-		if (refactor_err != OK) {
-			EditorToaster::get_singleton()->popup_str(vformat(TTR("Could not resolve symbol \"%s\"."), p_symbol), EditorToaster::SEVERITY_WARNING);
-			return;
-		}
-
-		_scan_scene_connections("res://", p_symbol, result.unverified);
-		result.references.sort_custom<GDScriptOccurrenceSort>();
-		result.unverified.sort_custom<GDScriptOccurrenceSort>();
+	ScriptLanguage::SymbolReferencesResult refs_result;
+	const Error refs_err = lang->find_symbol_references(p_symbol, script->get_path(), p_line + 1, p_column, _gather_script_buffer_overrides(), refs_result);
+	if (refs_err == OK) {
+		_scan_scene_connections("res://", p_symbol, refs_result.unverified);
+		refs_result.references.sort_custom<SymbolReferenceSort>();
+		refs_result.unverified.sort_custom<SymbolReferenceSort>();
 
 		FindInFilesPanel *panel = find_in_files->get_panel_for_results(TTR("References:") + " " + p_symbol);
 		panel->clear_results(p_symbol);
 		panel->set_with_replace(false);
-		for (const GDScriptRefactor::Occurrence &occ : result.references) {
+		for (const ScriptLanguage::SymbolReference &occ : refs_result.references) {
 			panel->add_result(occ.path, occ.line, occ.start_column, occ.end_column, occ.line_text);
 		}
-		for (const GDScriptRefactor::Occurrence &occ : result.unverified) {
+		for (const ScriptLanguage::SymbolReference &occ : refs_result.unverified) {
 			panel->add_result(occ.path, occ.line, occ.start_column, occ.end_column, occ.line_text, true);
 		}
 		panel->finish_adding_results();
 		find_in_files->make_visible();
 		return;
 	}
-#endif // MODULE_GDSCRIPT_ENABLED
+	if (refs_err != ERR_UNAVAILABLE) {
+		EditorToaster::get_singleton()->popup_str(vformat(TTR("Could not resolve symbol \"%s\"."), p_symbol), EditorToaster::SEVERITY_WARNING);
+		return;
+	}
+	// The language has no reference support; fall back to the lookup-based search.
 
 	// Resolve the origin symbol to find its definition.
 	String origin_code = cte->get_text_editor()->get_text_with_cursor_char(p_line, p_column);

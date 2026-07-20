@@ -64,11 +64,6 @@
 #include "scene/resources/style_box_flat.h"
 #include "servers/rendering/rendering_server.h"
 
-#include "modules/modules_enabled.gen.h" // For gdscript.
-#ifdef MODULE_GDSCRIPT_ENABLED
-#include "modules/gdscript/gdscript_refactor.h"
-#endif
-
 void ConnectionInfoDialog::ok_pressed() {
 }
 
@@ -1351,16 +1346,18 @@ void ScriptTextEditor::_rename_symbol_prompt(const String &p_symbol, int p_line,
 		return;
 	}
 	Ref<Script> script = edited_res;
-	if (script.is_null() || script->get_language() == nullptr || script->get_language()->get_name() != "GDScript") {
-		EditorToaster::get_singleton()->popup_str(TTR("Rename Symbol is only available for GDScript."), EditorToaster::SEVERITY_WARNING);
+	if (script.is_null() || script->get_language() == nullptr) {
 		return;
 	}
 	if (script->get_language()->get_reserved_words().has(p_symbol)) {
 		return;
 	}
-#ifdef MODULE_GDSCRIPT_ENABLED
 	bool renamable = false;
-	const Error resolve_err = GDScriptRefactor::resolve_symbol_at(p_symbol, script->get_path(), p_line + 1, p_column, code_editor->get_text_editor()->get_text(), renamable);
+	const Error resolve_err = script->get_language()->resolve_symbol_at(p_symbol, script->get_path(), p_line + 1, p_column, code_editor->get_text_editor()->get_text(), renamable);
+	if (resolve_err == ERR_UNAVAILABLE) {
+		EditorToaster::get_singleton()->popup_str(TTR("Rename Symbol is not supported for this script language."), EditorToaster::SEVERITY_WARNING);
+		return;
+	}
 	if (resolve_err != OK) {
 		EditorToaster::get_singleton()->popup_str(vformat(TTR("Cannot rename \"%s\": the symbol could not be resolved."), p_symbol), EditorToaster::SEVERITY_WARNING);
 		return;
@@ -1369,7 +1366,6 @@ void ScriptTextEditor::_rename_symbol_prompt(const String &p_symbol, int p_line,
 		EditorToaster::get_singleton()->popup_str(vformat(TTR("Cannot rename \"%s\": engine symbols cannot be renamed."), p_symbol), EditorToaster::SEVERITY_WARNING);
 		return;
 	}
-#endif // MODULE_GDSCRIPT_ENABLED
 
 	if (rename_symbol_dialog == nullptr) {
 		rename_symbol_dialog = memnew(ConfirmationDialog);
