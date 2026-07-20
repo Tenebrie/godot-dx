@@ -344,6 +344,7 @@ public: \
 private:
 
 class ClassDB;
+class Script;
 class ScriptInstance;
 
 class Object {
@@ -615,6 +616,7 @@ protected:
 
 #ifndef DISABLE_DEPRECATED
 	bool _is_class_bind_compat_118582(const String &p_name) const;
+	Variant _get_script_bind_compat_110693() const;
 #endif
 
 public: // Should be protected, but bug in clang++.
@@ -742,7 +744,7 @@ public:
 #endif // DEBUG_ENABLED
 
 	DEBUG_VIRTUAL void set_script(const Variant &p_script);
-	DEBUG_VIRTUAL Variant get_script() const;
+	DEBUG_VIRTUAL Ref<Script> get_script() const;
 
 	DEBUG_VIRTUAL bool has_meta(const StringName &p_name) const;
 	DEBUG_VIRTUAL void set_meta(const StringName &p_name, const Variant &p_value);

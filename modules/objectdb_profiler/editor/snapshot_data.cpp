@@ -79,7 +79,7 @@ SnapshotDataObject::SnapshotDataObject(SceneDebuggerObject &p_obj, GameStateSnap
 			pvalue = resource_cache.cache[path];
 
 			if (pinfo.hint_string == "Script") {
-				if (get_script() != pvalue) {
+				if (Variant(get_script()) != pvalue) {
 					set_script(Ref<RefCounted>());
 					Ref<Script> scr(pvalue);
 					if (scr.is_valid()) {

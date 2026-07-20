@@ -1,0 +1,5 @@
+GH-110693
+--------------
+Validate extension JSON: Error: Field 'classes/Object/methods/get_script/return_value': type changed value in new API, from "Variant" to "Script".
+
+Changed the return type of Object.get_script() from Variant to Script. A compatibility method is registered for the old signature.

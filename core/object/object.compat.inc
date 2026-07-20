@@ -33,6 +33,7 @@
 #include "object.h"
 
 #include "core/object/class_db.h"
+#include "core/object/script_language.h"
 
 bool Object::_is_class_bind_compat_118582(const String &p_name) const {
 	for (const StringName &name : get_gdtype().get_name_hierarchy()) {
@@ -43,8 +44,13 @@ bool Object::_is_class_bind_compat_118582(const String &p_name) const {
 	return false;
 }
 
+Variant Object::_get_script_bind_compat_110693() const {
+	return Variant(get_script());
+}
+
 void Object::_bind_compatibility_methods() {
 	ClassDB::bind_compatibility_method(D_METHOD("is_class", "class"), &Object::_is_class_bind_compat_118582);
+	ClassDB::bind_compatibility_method(D_METHOD("get_script"), &Object::_get_script_bind_compat_110693);
 }
 
 #else

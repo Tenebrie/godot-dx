@@ -690,7 +690,7 @@
 			</description>
 		</method>
 		<method name="get_script" qualifiers="const">
-			<return type="Variant" />
+			<return type="Script" />
 			<description>
 				Returns the object's [Script] instance, or [code]null[/code] if no script is attached.
 			</description>

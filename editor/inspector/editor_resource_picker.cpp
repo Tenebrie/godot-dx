@@ -895,8 +895,8 @@ bool EditorResourcePicker::_is_drop_valid(const Dictionary &p_drag_data) const {
 		return true;
 	}
 
-	if (res->get_script()) {
-		StringName custom_class = EditorNode::get_singleton()->get_object_custom_type_name(res->get_script());
+	if (res->get_script().is_valid()) {
+		StringName custom_class = EditorNode::get_singleton()->get_object_custom_type_name(res->get_script().ptr());
 		if (_is_type_valid(custom_class, allowed_types)) {
 			return true;
 		}
@@ -1130,8 +1130,8 @@ void EditorResourcePicker::set_base_type(const String &p_base_type) {
 
 		StringName custom_class;
 		bool is_custom = false;
-		if (edited_resource->get_script()) {
-			custom_class = EditorNode::get_singleton()->get_object_custom_type_name(edited_resource->get_script());
+		if (edited_resource->get_script().is_valid()) {
+			custom_class = EditorNode::get_singleton()->get_object_custom_type_name(edited_resource->get_script().ptr());
 			is_custom = _is_type_valid(custom_class, allowed_types);
 		}
 
@@ -1174,8 +1174,8 @@ bool EditorResourcePicker::is_resource_allowed(const Ref<Resource> &p_resource) 
 
 		StringName custom_class;
 		bool is_custom = false;
-		if (p_resource->get_script()) {
-			custom_class = EditorNode::get_singleton()->get_object_custom_type_name(p_resource->get_script());
+		if (p_resource->get_script().is_valid()) {
+			custom_class = EditorNode::get_singleton()->get_object_custom_type_name(p_resource->get_script().ptr());
 			is_custom = _is_type_valid(custom_class, allowed_types);
 		}
 
@@ -1189,8 +1189,8 @@ bool EditorResourcePicker::is_resource_allowed(const Ref<Resource> &p_resource) 
 void EditorResourcePicker::set_edited_resource(Ref<Resource> p_resource) {
 	if (!is_resource_allowed(p_resource)) {
 		StringName custom_class;
-		if (p_resource->get_script()) {
-			custom_class = EditorNode::get_singleton()->get_object_custom_type_name(p_resource->get_script());
+		if (p_resource->get_script().is_valid()) {
+			custom_class = EditorNode::get_singleton()->get_object_custom_type_name(p_resource->get_script().ptr());
 		}
 		const String class_str = (custom_class.is_empty() ? p_resource->get_class() : vformat("%s (%s)", custom_class, p_resource->get_class()));
 		ERR_FAIL_MSG(vformat("Failed to set a resource of the type '%s' because this EditorResourcePicker only accepts '%s' and its derivatives.", class_str, base_type));

@@ -965,7 +965,7 @@ String Object::to_string() {
 }
 
 void Object::set_script(const Variant &p_script) {
-	if (get_script() == p_script) {
+	if (Variant(get_script()) == p_script) {
 		return;
 	}
 
@@ -1006,8 +1006,8 @@ void Object::set_script_instance(ScriptInstance *p_instance) {
 	script_instance = p_instance;
 }
 
-Variant Object::get_script() const {
-	return script_instance ? Variant(script_instance->get_script()) : Variant();
+Ref<Script> Object::get_script() const {
+	return script_instance ? script_instance->get_script() : Ref<Script>();
 }
 
 bool Object::has_meta(const StringName &p_name) const {

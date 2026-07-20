@@ -4155,8 +4155,8 @@ void Node::set_script(const Variant &p_script) {
 	Object::set_script(p_script);
 }
 
-Variant Node::get_script() const {
-	ERR_THREAD_GUARD_V(Variant());
+Ref<Script> Node::get_script() const {
+	ERR_THREAD_GUARD_V(Ref<Script>());
 	return Object::get_script();
 }
 

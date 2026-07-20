@@ -34,6 +34,7 @@
 #include "core/math/math_funcs.h"
 #include "core/math/random_pcg.h"
 #include "core/object/class_db.h"
+#include "core/object/script_language.h"
 #include "core/os/os.h"
 #include "core/variant/container_type_validate.h" // IWYU pragma: keep.
 #include "scene/main/node.h" //only so casting works

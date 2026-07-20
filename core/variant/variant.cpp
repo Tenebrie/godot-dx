@@ -34,6 +34,7 @@
 #include "core/io/json.h"
 #include "core/io/resource.h"
 #include "core/math/math_funcs.h"
+#include "core/object/script_language.h"
 #include "core/variant/variant_parser.h"
 #include "core/variant/variant_pools.h"
 
