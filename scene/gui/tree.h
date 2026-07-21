@@ -526,6 +526,7 @@ private:
 	int sticky_stack_end = 0;
 	LocalVector<TreeItem *> sticky_candidates;
 	LocalVector<TreeItem *> sticky_list;
+	int _predict_sticky_stack_height(TreeItem *p_item) const;
 
 	Rect2 custom_popup_rect;
 	int edited_col = -1;

@@ -6238,6 +6238,32 @@ int Tree::get_item_offset(TreeItem *p_item) const {
 	return -1; // Not found.
 }
 
+// The height the sticky header stack will have once p_item is scrolled to the
+// top of the view: its ancestor chain, subject to the same caps as the stack
+// built during drawing. `sticky_stack_end` can't be used for scroll targets —
+// it reflects the current scroll position, not the destination.
+int Tree::_predict_sticky_stack_height(TreeItem *p_item) const {
+	if (theme_cache.scroll_max_sticky_items <= 0) {
+		return 0;
+	}
+	LocalVector<TreeItem *> ancestors;
+	for (TreeItem *item = p_item->get_parent(); item; item = item->get_parent()) {
+		if (hide_root && item == root) {
+			break;
+		}
+		ancestors.push_back(item);
+	}
+	const real_t height_limit = get_size().y * .4;
+	real_t height = 0;
+	for (int i = ancestors.size() - 1; i >= 0; i--) {
+		height += compute_item_height(ancestors[i]) + theme_cache.v_separation;
+		if ((int)ancestors.size() - i >= theme_cache.scroll_max_sticky_items || height >= height_limit) {
+			break;
+		}
+	}
+	return height;
+}
+
 void Tree::ensure_cursor_is_visible() {
 	if (!is_inside_tree()) {
 		return;
@@ -6264,23 +6290,27 @@ void Tree::ensure_cursor_is_visible() {
 			}
 		}
 
+		const int sticky_stack_h = _predict_sticky_stack_height(selected_item);
 		if (!selected_is_sticky) {
-			y_offset -= sticky_stack_end;
+			y_offset -= sticky_stack_h;
 		}
 
 		const int cell_h = compute_item_height(selected_item) + theme_cache.v_separation;
-		int screen_h = area_size.height - tbh - sticky_stack_end;
+		int screen_h = area_size.height - tbh - sticky_stack_h;
+		const int scroll_padding = MIN(cell_h / 2, MAX(0, screen_h - cell_h));
 
 		if (cell_h > screen_h) { // Screen size is too small, maybe it was not resized yet.
 			delta_v = y_offset - v_scroll->get_value();
 			v_scroll->set_value(y_offset);
 		} else if (y_offset + cell_h > v_scroll->get_value() + screen_h) {
-			delta_v = y_offset - screen_h + cell_h - v_scroll->get_value();
+			const double target_v = y_offset - screen_h + cell_h + scroll_padding;
+			delta_v = target_v - v_scroll->get_value();
 			scroll_pending++;
-			callable_mp((Range *)v_scroll, &Range::set_value).call_deferred(y_offset - screen_h + cell_h);
+			callable_mp((Range *)v_scroll, &Range::set_value).call_deferred(target_v);
 		} else if (y_offset < v_scroll->get_value()) {
-			delta_v = y_offset - v_scroll->get_value();
-			v_scroll->set_value(y_offset);
+			const double target_v = MAX(0, y_offset - scroll_padding);
+			delta_v = target_v - v_scroll->get_value();
+			v_scroll->set_value(target_v);
 		}
 	}
 
@@ -6519,10 +6549,12 @@ void Tree::scroll_to_item(TreeItem *p_item, bool p_center_on_item) {
 	int y_offset = get_item_offset(p_item);
 	if (y_offset != -1) {
 		const int title_button_height = _get_title_button_height();
+		const int sticky_stack_h = _predict_sticky_stack_height(p_item);
 		y_offset -= title_button_height;
+		y_offset -= sticky_stack_h;
 
 		const int cell_h = compute_item_height(p_item) + theme_cache.v_separation;
-		int screen_h = area_size.height - title_button_height;
+		int screen_h = area_size.height - title_button_height - sticky_stack_h;
 
 		if (p_center_on_item) {
 			// This makes sure that centering the offset doesn't overflow.
