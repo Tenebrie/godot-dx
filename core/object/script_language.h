@@ -351,6 +351,9 @@ public:
 		bool matches_dirty = true; // Must be set when mutating `matches`, so that sorting characteristics are recalculated.
 		int location = LOCATION_OTHER;
 		String theme_color_name;
+		// If the text directly before the completion base matches this, it is consumed on confirm
+		// (e.g. the `:` that summoned named-argument completion).
+		String replace_prefix;
 
 		CodeCompletionOption() {}
 

@@ -1641,6 +1641,9 @@ GDScriptParser::EnumNode *GDScriptParser::parse_enum(bool p_is_static) {
 		if (check(GDScriptTokenizer::Token::BRACE_CLOSE)) {
 			break; // Allow trailing comma.
 		}
+		if (check(GDScriptTokenizer::Token::IDENTIFIER)) {
+			make_completion_context(COMPLETION_DECLARATION, enum_node);
+		}
 		if (consume(GDScriptTokenizer::Token::IDENTIFIER, R"(Expected identifier for enum key.)")) {
 			GDScriptParser::IdentifierNode *identifier = parse_identifier();
 
@@ -3801,6 +3804,11 @@ GDScriptParser::ExpressionNode *GDScriptParser::parse_call(ExpressionNode *p_pre
 		if (check(GDScriptTokenizer::Token::PARENTHESIS_CLOSE)) {
 			// Allow for trailing comma.
 			break;
+		}
+		if (for_completion && check(GDScriptTokenizer::Token::COLON)) {
+			// A `:` at argument start summons named-argument completion; skip it so the
+			// partial argument behind the cursor still parses.
+			advance();
 		}
 		ExpressionNode *argument = parse_expression(false);
 		if (argument == nullptr) {

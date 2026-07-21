@@ -62,6 +62,7 @@ Dictionary GDScriptSyntaxHighlighter::_get_line_syntax_highlighting_impl(int p_l
 	bool is_hex_notation = false;
 	bool is_bin_notation = false;
 	bool in_member_variable = false;
+	bool in_named_argument = false;
 	bool in_lambda = false;
 
 	bool in_function_name = false; // Any call.
@@ -70,6 +71,7 @@ Dictionary GDScriptSyntaxHighlighter::_get_line_syntax_highlighting_impl(int p_l
 	bool is_after_func_signal_declaration = false;
 	bool in_var_const_declaration = false;
 	bool is_after_var_const_declaration = false;
+	bool is_after_enum_declaration = false;
 	bool expect_type = false;
 
 	int in_declaration_params = 0; // The number of opened `(` after func/signal name.
@@ -93,6 +95,11 @@ Dictionary GDScriptSyntaxHighlighter::_get_line_syntax_highlighting_impl(int p_l
 			get_line_syntax_highlighting(p_line - 1);
 		}
 		in_region = color_region_cache[p_line - 1];
+	}
+
+	String bracket_stack;
+	if (p_line != 0 && bracket_stack_cache.has(p_line - 1)) {
+		bracket_stack = bracket_stack_cache[p_line - 1];
 	}
 
 	const String &str = text_edit->get_line_with_ime(p_line);
@@ -472,15 +479,29 @@ Dictionary GDScriptSyntaxHighlighter::_get_line_syntax_highlighting_impl(int p_l
 						col = global_function_color;
 					}
 				}
-			} else if (class_names.has(word)) {
-				col = class_names[word];
+			} else if (class_names.has(word) || member_keywords.has(word)) {
+				// A word in enum-value key position (directly after `{` or `,` inside an enum
+				// declaration) is a new name, not a reference — even if it shadows a class name.
+				bool is_enum_value_key = false;
+				if (bracket_stack.ends_with("E")) {
+					int k = j - 1;
+					while (k >= 0 && is_whitespace(str[k])) {
+						k--;
+					}
+					is_enum_value_key = k < 0 || str[k] == '{' || str[k] == ',';
+				}
+				if (!is_enum_value_key) {
+					if (class_names.has(word)) {
+						col = class_names[word];
+					} else {
+						col = member_keywords[word];
+						in_member_variable = true;
+					}
+				}
 			} else if (reserved_keywords.has(word)) {
 				col = reserved_keywords[word];
 				// Don't highlight `list` as a type in `for elem: Type in list`.
 				expect_type = false;
-			} else if (member_keywords.has(word)) {
-				col = member_keywords[word];
-				in_member_variable = true;
 			}
 
 			if (col != Color()) {
@@ -500,6 +521,10 @@ Dictionary GDScriptSyntaxHighlighter::_get_line_syntax_highlighting_impl(int p_l
 					keyword_color = col;
 				}
 			}
+		}
+
+		if (in_word && prev_text == GDScriptTokenizer::get_token_name(GDScriptTokenizer::Token::ENUM)) {
+			is_after_enum_declaration = true;
 		}
 
 		if (!in_function_name && in_word && !in_keyword) {
@@ -550,6 +575,20 @@ Dictionary GDScriptSyntaxHighlighter::_get_line_syntax_highlighting_impl(int p_l
 			}
 		}
 
+		// A bare identifier followed by `:` directly inside call parentheses is a named argument.
+		if (!in_named_argument && !in_function_name && !in_member_variable && !in_keyword && !in_number && in_word && bracket_stack.ends_with("C")) {
+			int k = j;
+			while (k < line_length && !is_symbol(str[k]) && !is_whitespace(str[k])) {
+				k++;
+			}
+			while (k < line_length && is_whitespace(str[k])) {
+				k++;
+			}
+			if (k < line_length && str[k] == ':' && (k + 1 >= line_length || (str[k + 1] != '=' && str[k + 1] != ':'))) {
+				in_named_argument = true;
+			}
+		}
+
 		if (is_a_symbol) {
 			if (in_function_declaration || in_signal_declaration) {
 				is_after_func_signal_declaration = true;
@@ -576,6 +615,41 @@ Dictionary GDScriptSyntaxHighlighter::_get_line_syntax_highlighting_impl(int p_l
 			} else if ((is_after_func_signal_declaration || prev_text == GDScriptTokenizer::get_token_name(GDScriptTokenizer::Token::FUNC)) && str[j] == '(') {
 				in_declaration_params = 1;
 				in_declaration_param_dicts = 0;
+			}
+
+			switch (str[j]) {
+				case '(':
+					if ((is_after_func_signal_declaration || prev_text == GDScriptTokenizer::get_token_name(GDScriptTokenizer::Token::FUNC)) && in_declaration_params <= 1) {
+						bracket_stack += "D";
+					} else {
+						bracket_stack += "C";
+					}
+					break;
+				case ')':
+					if (bracket_stack.ends_with("C") || bracket_stack.ends_with("D")) {
+						bracket_stack = bracket_stack.left(bracket_stack.length() - 1);
+					}
+					break;
+				case '[':
+					bracket_stack += "[";
+					break;
+				case ']':
+					if (bracket_stack.ends_with("[")) {
+						bracket_stack = bracket_stack.left(bracket_stack.length() - 1);
+					}
+					break;
+				case '{':
+					if (is_after_enum_declaration || prev_text == GDScriptTokenizer::get_token_name(GDScriptTokenizer::Token::ENUM)) {
+						bracket_stack += "E";
+					} else {
+						bracket_stack += "{";
+					}
+					break;
+				case '}':
+					if (bracket_stack.ends_with("{") || bracket_stack.ends_with("E")) {
+						bracket_stack = bracket_stack.left(bracket_stack.length() - 1);
+					}
+					break;
 			}
 
 			if (expect_type) {
@@ -616,10 +690,12 @@ Dictionary GDScriptSyntaxHighlighter::_get_line_syntax_highlighting_impl(int p_l
 			in_var_const_declaration = false;
 			in_lambda = false;
 			in_member_variable = false;
+			in_named_argument = false;
 
 			if (!is_whitespace(str[j])) {
 				is_after_func_signal_declaration = false;
 				is_after_var_const_declaration = false;
+				is_after_enum_declaration = false;
 			}
 		}
 
@@ -691,6 +767,9 @@ Dictionary GDScriptSyntaxHighlighter::_get_line_syntax_highlighting_impl(int p_l
 		} else if (in_number) {
 			next_type = NUMBER;
 			color = number_color;
+		} else if (in_named_argument) {
+			next_type = NAMED_ARGUMENT;
+			color = named_argument_color;
 		} else if (is_a_symbol) {
 			next_type = SYMBOL;
 			color = symbol_color;
@@ -737,6 +816,7 @@ Dictionary GDScriptSyntaxHighlighter::_get_line_syntax_highlighting_impl(int p_l
 			color_map[j] = highlighter_info;
 		}
 	}
+	bracket_stack_cache[p_line] = bracket_stack;
 	return color_map;
 }
 
@@ -757,6 +837,7 @@ void GDScriptSyntaxHighlighter::_update_cache() {
 	global_functions.clear();
 	color_regions.clear();
 	color_region_cache.clear();
+	bracket_stack_cache.clear();
 
 	font_color = text_edit->get_theme_color(SceneStringName(font_color));
 	symbol_color = EDITOR_GET("text_editor/theme/highlighting/symbol_color");
@@ -959,6 +1040,7 @@ void GDScriptSyntaxHighlighter::_update_cache() {
 	node_ref_color = EDITOR_GET("text_editor/theme/highlighting/gdscript/node_reference_color");
 	annotation_color = EDITOR_GET("text_editor/theme/highlighting/gdscript/annotation_color");
 	string_name_color = EDITOR_GET("text_editor/theme/highlighting/gdscript/string_name_color");
+	named_argument_color = EDITOR_GET("text_editor/theme/highlighting/gdscript/named_argument_color");
 	type_color = EDITOR_GET("text_editor/theme/highlighting/base_type_color");
 	comment_marker_colors[COMMENT_MARKER_CRITICAL] = EDITOR_GET("text_editor/theme/highlighting/comment_markers/critical_color");
 	comment_marker_colors[COMMENT_MARKER_WARNING] = EDITOR_GET("text_editor/theme/highlighting/comment_markers/warning_color");

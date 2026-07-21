@@ -3284,6 +3284,26 @@ static void _find_enumeration_candidates(GDScriptParser::CompletionContext &p_co
 	}
 }
 
+// Named-argument completion is opt-in: typing `:` at an empty argument slot summons the
+// parameter-name list. The summoning colon is consumed on confirm via `replace_prefix`.
+static bool _is_named_argument_summon(const String &p_code) {
+	int cursor = p_code.find_char(0xFFFF);
+	if (cursor == -1) {
+		return false;
+	}
+	int i = cursor - 1;
+	while (i >= 0 && is_ascii_identifier_char(p_code[i])) {
+		i--;
+	}
+	if (i >= 0 && p_code[i] == ' ') {
+		i--;
+	}
+	if (i < 0 || p_code[i] != ':') {
+		return false;
+	}
+	return i == 0 || !is_ascii_identifier_char(p_code[i - 1]);
+}
+
 static void _add_named_argument_options(const MethodInfo &p_info, const GDScriptParser::CallNode *p_call, int p_argidx, HashMap<String, ScriptLanguage::CodeCompletionOption> &r_result) {
 	if (p_info.flags & METHOD_FLAG_VARARG) {
 		return;
@@ -3309,11 +3329,12 @@ static void _add_named_argument_options(const MethodInfo &p_info, const GDScript
 		}
 		ScriptLanguage::CodeCompletionOption option(arg_name + ":", ScriptLanguage::CODE_COMPLETION_KIND_PLAIN_TEXT, ScriptLanguage::LOCATION_LOCAL);
 		option.insert_text = arg_name + ": ";
+		option.replace_prefix = ":";
 		r_result.insert(option.display, option);
 	}
 }
 
-static void _list_call_arguments(GDScriptParser::CompletionContext &p_context, const GDScriptCompletionIdentifier &p_base, const GDScriptParser::CallNode *p_call, int p_argidx, bool p_static, HashMap<String, ScriptLanguage::CodeCompletionOption> &r_result, String &r_arghint) {
+static void _list_call_arguments(GDScriptParser::CompletionContext &p_context, const GDScriptCompletionIdentifier &p_base, const GDScriptParser::CallNode *p_call, int p_argidx, bool p_static, bool p_include_named_args, HashMap<String, ScriptLanguage::CodeCompletionOption> &r_result, String &r_arghint) {
 	Variant base = p_base.value;
 	GDScriptParser::DataType base_type = p_base.type;
 	const StringName &method = p_call->function_name;
@@ -3333,7 +3354,9 @@ static void _list_call_arguments(GDScriptParser::CompletionContext &p_context, c
 							const GDScriptParser::ClassNode::Member &member = current->get_member("_init");
 
 							if (member.type == GDScriptParser::ClassNode::Member::FUNCTION) {
-								_add_named_argument_options(member.function->info, p_call, p_argidx, r_result);
+								if (p_include_named_args) {
+									_add_named_argument_options(member.function->info, p_call, p_argidx, r_result);
+								}
 								r_arghint = base_type.class_type->get_datatype().to_string() + " new" + _make_arguments_hint(member.function, p_argidx, true);
 								return;
 							}
@@ -3349,7 +3372,9 @@ static void _list_call_arguments(GDScriptParser::CompletionContext &p_context, c
 					const GDScriptParser::ClassNode::Member &member = base_type.class_type->get_member(method);
 
 					if (member.type == GDScriptParser::ClassNode::Member::FUNCTION) {
-						_add_named_argument_options(member.function->info, p_call, p_argidx, r_result);
+						if (p_include_named_args) {
+							_add_named_argument_options(member.function->info, p_call, p_argidx, r_result);
+						}
 						r_arghint = _make_arguments_hint(member.function, p_argidx);
 						return;
 					}
@@ -3360,7 +3385,9 @@ static void _list_call_arguments(GDScriptParser::CompletionContext &p_context, c
 			case GDScriptParser::DataType::SCRIPT: {
 				if (base_type.script_type->is_valid() && base_type.script_type->has_method(method)) {
 					MethodInfo method_info = base_type.script_type->get_method_info(method);
-					_add_named_argument_options(method_info, p_call, p_argidx, r_result);
+					if (p_include_named_args) {
+						_add_named_argument_options(method_info, p_call, p_argidx, r_result);
+					}
 					r_arghint = _make_arguments_hint(method_info, p_argidx);
 					return;
 				}
@@ -3408,7 +3435,9 @@ static void _list_call_arguments(GDScriptParser::CompletionContext &p_context, c
 						}
 					}
 
-					_add_named_argument_options(info, p_call, p_argidx, r_result);
+					if (p_include_named_args) {
+						_add_named_argument_options(info, p_call, p_argidx, r_result);
+					}
 					r_arghint = _make_arguments_hint(info, p_argidx);
 				}
 
@@ -3683,7 +3712,7 @@ static bool _get_subscript_type(GDScriptParser::CompletionContext &p_context, co
 	return false;
 }
 
-static void _find_call_arguments(GDScriptParser::CompletionContext &p_context, const GDScriptParser::Node *p_call, int p_argidx, HashMap<String, ScriptLanguage::CodeCompletionOption> &r_result, bool &r_forced, String &r_arghint) {
+static void _find_call_arguments(GDScriptParser::CompletionContext &p_context, const GDScriptParser::Node *p_call, int p_argidx, bool p_include_named_args, HashMap<String, ScriptLanguage::CodeCompletionOption> &r_result, bool &r_forced, String &r_arghint) {
 	if (p_call->type == GDScriptParser::Node::PRELOAD) {
 		if (p_argidx == 0 && bool(EDITOR_GET("text_editor/completion/complete_file_paths"))) {
 			_get_directory_contents(static_cast<const GDScriptParser::PreloadNode *>(p_call)->path, EditorFileSystem::get_singleton()->get_filesystem(), r_result);
@@ -3724,7 +3753,9 @@ static void _find_call_arguments(GDScriptParser::CompletionContext &p_context, c
 						continue;
 					}
 					if (E.name == call->function_name) {
-						_add_named_argument_options(E, call, p_argidx, r_result);
+						if (p_include_named_args) {
+							_add_named_argument_options(E, call, p_argidx, r_result);
+						}
 						r_forced = r_result.size() > 0;
 						r_arghint += _make_arguments_hint(E, p_argidx);
 						return;
@@ -3750,13 +3781,17 @@ static void _find_call_arguments(GDScriptParser::CompletionContext &p_context, c
 		}
 	} else if (Variant::has_utility_function(call->function_name)) {
 		MethodInfo info = Variant::get_utility_function_info(call->function_name);
-		_add_named_argument_options(info, call, p_argidx, r_result);
+		if (p_include_named_args) {
+			_add_named_argument_options(info, call, p_argidx, r_result);
+		}
 		r_forced = r_result.size() > 0;
 		r_arghint = _make_arguments_hint(info, p_argidx);
 		return;
 	} else if (GDScriptUtilityFunctions::function_exists(call->function_name)) {
 		MethodInfo info = GDScriptUtilityFunctions::get_function_info(call->function_name);
-		_add_named_argument_options(info, call, p_argidx, r_result);
+		if (p_include_named_args) {
+			_add_named_argument_options(info, call, p_argidx, r_result);
+		}
 		r_forced = r_result.size() > 0;
 		r_arghint = _make_arguments_hint(info, p_argidx);
 		return;
@@ -3791,7 +3826,7 @@ static void _find_call_arguments(GDScriptParser::CompletionContext &p_context, c
 	GDScriptCompletionIdentifier ci;
 	ci.type = base_type;
 	ci.value = base;
-	_list_call_arguments(p_context, ci, call, p_argidx, _static, r_result, r_arghint);
+	_list_call_arguments(p_context, ci, call, p_argidx, _static, p_include_named_args, r_result, r_arghint);
 
 	r_forced = r_result.size() > 0;
 }
@@ -3807,6 +3842,7 @@ static void _find_call_arguments(GDScriptParser::CompletionContext &p_context, c
 
 	r_forced = false;
 	HashMap<String, ScriptLanguage::CodeCompletionOption> options;
+	const bool include_named_args = _is_named_argument_summon(p_code);
 
 	GDScriptParser::CompletionContext completion_context = parser.get_completion_context();
 	if (completion_context.current_class != nullptr && completion_context.current_class->outer == nullptr) {
@@ -3941,6 +3977,20 @@ static void _find_call_arguments(GDScriptParser::CompletionContext &p_context, c
 			[[fallthrough]];
 		case GDScriptParser::COMPLETION_IDENTIFIER: {
 			_find_identifiers(completion_context, is_function, !_guess_expecting_callable(completion_context), options, 0);
+
+			// Only when named-argument completion was summoned (`:` before the partial word):
+			// the identifier being typed then filters the parameter-name list, so completion
+			// re-requests must keep returning it. Ordinary identifier typing stays stock, and
+			// the signature hint is deliberately left untouched — CALL_ARGUMENTS owns it.
+			if (include_named_args && completion_context.call.call != nullptr && completion_context.call.call->type == GDScriptParser::Node::CALL) {
+				const GDScriptParser::CallNode *argument_call = static_cast<const GDScriptParser::CallNode *>(completion_context.call.call);
+				const int argidx = completion_context.call.argument;
+				if (argidx >= 0 && argidx < argument_call->arguments.size() && argument_call->arguments[argidx] == completion_context.node) {
+					bool call_forced = false;
+					String discarded_hint;
+					_find_call_arguments(completion_context, argument_call, argidx, include_named_args, options, call_forced, discarded_hint);
+				}
+			}
 		} break;
 		case GDScriptParser::COMPLETION_ATTRIBUTE_METHOD:
 			is_function = true;
@@ -4085,7 +4135,13 @@ static void _find_call_arguments(GDScriptParser::CompletionContext &p_context, c
 				break;
 			}
 
-			_find_call_arguments(completion_context, completion_context.node, completion_context.current_argument, options, r_forced, r_call_hint);
+			if (include_named_args) {
+				// A `:`-summoned named-argument dropdown shows without the signature hint.
+				String discarded_hint;
+				_find_call_arguments(completion_context, completion_context.node, completion_context.current_argument, true, options, r_forced, discarded_hint);
+			} else {
+				_find_call_arguments(completion_context, completion_context.node, completion_context.current_argument, false, options, r_forced, r_call_hint);
+			}
 		} break;
 		case GDScriptParser::COMPLETION_OVERRIDE_METHOD: {
 			GDScriptParser::DataType native_type = completion_context.current_class->base_type;
@@ -4723,25 +4779,6 @@ static Error _lookup_symbol_from_base(const GDScriptParser::DataType &p_base, co
 }
 
 ::Error GDScriptLanguage::lookup_code(const String &p_code, const String &p_symbol, const String &p_path, Object *p_owner, LookupResult &r_result) {
-	// Before parsing, try the usual stuff.
-	if (GDScriptAnalyzer::class_exists(p_symbol)) {
-		r_result.type = ScriptLanguage::LOOKUP_RESULT_CLASS;
-		r_result.class_name = p_symbol;
-		return OK;
-	}
-
-	if (Variant::get_type_by_name(p_symbol) < Variant::VARIANT_MAX) {
-		r_result.type = ScriptLanguage::LOOKUP_RESULT_CLASS;
-		r_result.class_name = p_symbol;
-		return OK;
-	}
-
-	if (p_symbol == "Variant") {
-		r_result.type = ScriptLanguage::LOOKUP_RESULT_CLASS;
-		r_result.class_name = "Variant";
-		return OK;
-	}
-
 	GDScriptParser parser;
 	parser.parse(p_code, p_path, true);
 
@@ -4762,6 +4799,28 @@ static Error _lookup_symbol_from_base(const GDScriptParser::DataType &p_base, co
 
 	GDScriptAnalyzer analyzer(&parser);
 	analyzer.analyze();
+
+	// Cursor on a value inside an enum declaration: resolve to the enum value itself,
+	// even when its name collides with a class name.
+	if (context.node != nullptr && context.node->type == GDScriptParser::Node::ENUM) {
+		const GDScriptParser::EnumNode *enum_node = static_cast<const GDScriptParser::EnumNode *>(context.node);
+		for (const GDScriptParser::EnumNode::Value &value : enum_node->values) {
+			if (value.identifier != nullptr && value.identifier->name == p_symbol) {
+				String doc_type_name;
+				String doc_enum_name;
+				GDScriptDocGen::doctype_from_gdtype(enum_node->get_datatype(), doc_type_name, doc_enum_name);
+
+				Error err = OK;
+				r_result.type = ScriptLanguage::LOOKUP_RESULT_CLASS_CONSTANT;
+				r_result.class_name = doc_enum_name.is_empty() ? doc_type_name : doc_enum_name;
+				r_result.class_member = p_symbol;
+				r_result.script = GDScriptCache::get_shallow_script(p_path, err);
+				r_result.script_path = p_path;
+				r_result.location = value.line;
+				return OK;
+			}
+		}
+	}
 
 	if (context.current_class && context.current_class->extends.size() > 0) {
 		StringName class_name = context.current_class->extends[0]->name;
@@ -5095,6 +5154,26 @@ static Error _lookup_symbol_from_base(const GDScriptParser::DataType &p_base, co
 		} break;
 		default: {
 		}
+	}
+
+	// Bare class names, checked last so context-specific resolution (e.g. an enum value
+	// that shadows a class name) always wins.
+	if (GDScriptAnalyzer::class_exists(p_symbol)) {
+		r_result.type = ScriptLanguage::LOOKUP_RESULT_CLASS;
+		r_result.class_name = p_symbol;
+		return OK;
+	}
+
+	if (Variant::get_type_by_name(p_symbol) < Variant::VARIANT_MAX) {
+		r_result.type = ScriptLanguage::LOOKUP_RESULT_CLASS;
+		r_result.class_name = p_symbol;
+		return OK;
+	}
+
+	if (p_symbol == "Variant") {
+		r_result.type = ScriptLanguage::LOOKUP_RESULT_CLASS;
+		r_result.class_name = "Variant";
+		return OK;
 	}
 
 	return ERR_CANT_RESOLVE;

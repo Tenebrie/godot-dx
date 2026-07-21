@@ -51,8 +51,10 @@
 			<param index="5" name="value" type="Variant" default="null" />
 			<param index="6" name="location" type="int" default="1024" />
 			<param index="7" name="type_text" type="String" default="&quot;&quot;" />
+			<param index="8" name="replace_prefix" type="String" default="&quot;&quot;" />
 			<description>
 				Submits an item to the queue of potential candidates for the autocomplete menu. Call [method update_code_completion_options] to update the list.
+				If [param replace_prefix] is set and the text directly before the completion base matches it, that text is consumed when the option is confirmed.
 				[param location] indicates location of the option relative to the location of the code completion query. See [enum CodeEdit.CodeCompletionLocation] for how to set this value.
 				[b]Note:[/b] This list will replace all current candidates.
 			</description>

@@ -2473,7 +2473,7 @@ void CodeEdit::request_code_completion(bool p_force) {
 	queue_accessibility_update();
 }
 
-void CodeEdit::add_code_completion_option(CodeCompletionKind p_type, const String &p_display_text, const String &p_insert_text, const Color &p_text_color, const Ref<Resource> &p_icon, const Variant &p_value, int p_location, const String &p_type_text) {
+void CodeEdit::add_code_completion_option(CodeCompletionKind p_type, const String &p_display_text, const String &p_insert_text, const Color &p_text_color, const Ref<Resource> &p_icon, const Variant &p_value, int p_location, const String &p_type_text, const String &p_replace_prefix) {
 	ScriptLanguage::CodeCompletionOption completion_option;
 	completion_option.kind = (ScriptLanguage::CodeCompletionKind)p_type;
 	completion_option.display = p_display_text;
@@ -2483,6 +2483,7 @@ void CodeEdit::add_code_completion_option(CodeCompletionKind p_type, const Strin
 	completion_option.default_value = p_value;
 	completion_option.location = p_location;
 	completion_option.type_text = p_type_text;
+	completion_option.replace_prefix = p_replace_prefix;
 	code_completion_option_submitted.push_back(completion_option);
 }
 
@@ -2570,6 +2571,19 @@ void CodeEdit::confirm_code_completion(bool p_replace) {
 
 		const String &insert_text = code_completion_options[code_completion_current_selected].insert_text;
 		const String &display_text = code_completion_options[code_completion_current_selected].display;
+		const String &replace_prefix = code_completion_options[code_completion_current_selected].replace_prefix;
+
+		if (!replace_prefix.is_empty()) {
+			const String line = get_line(caret_line);
+			int base_start = get_caret_column(i) - code_completion_base.length();
+			int prefix_start = base_start - replace_prefix.length();
+			while (prefix_start > 0 && line[prefix_start] == ' ') {
+				prefix_start--;
+			}
+			if (prefix_start >= 0 && line.substr(prefix_start, replace_prefix.length()) == replace_prefix) {
+				remove_text(caret_line, prefix_start, caret_line, base_start);
+			}
+		}
 
 		if (p_replace) {
 			// Find end of current section.
@@ -3152,7 +3166,7 @@ void CodeEdit::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("get_text_for_code_completion"), &CodeEdit::get_text_for_code_completion);
 	ClassDB::bind_method(D_METHOD("request_code_completion", "force"), &CodeEdit::request_code_completion, DEFVAL(false));
-	ClassDB::bind_method(D_METHOD("add_code_completion_option", "type", "display_text", "insert_text", "text_color", "icon", "value", "location", "type_text"), &CodeEdit::add_code_completion_option, DEFVAL(Color(1, 1, 1)), DEFVAL(Ref<Resource>()), DEFVAL(Variant()), DEFVAL(LOCATION_OTHER), DEFVAL(String()));
+	ClassDB::bind_method(D_METHOD("add_code_completion_option", "type", "display_text", "insert_text", "text_color", "icon", "value", "location", "type_text", "replace_prefix"), &CodeEdit::add_code_completion_option, DEFVAL(Color(1, 1, 1)), DEFVAL(Ref<Resource>()), DEFVAL(Variant()), DEFVAL(LOCATION_OTHER), DEFVAL(String()), DEFVAL(String()));
 	ClassDB::bind_method(D_METHOD("update_code_completion_options", "force"), &CodeEdit::update_code_completion_options);
 	ClassDB::bind_method(D_METHOD("get_code_completion_options"), &CodeEdit::get_code_completion_options);
 	ClassDB::bind_method(D_METHOD("get_code_completion_option", "index"), &CodeEdit::get_code_completion_option);

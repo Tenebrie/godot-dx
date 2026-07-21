@@ -56,6 +56,8 @@ private:
 	};
 	Vector<ColorRegion> color_regions;
 	HashMap<int, int> color_region_cache;
+	// End-of-line bracket nesting, innermost last: 'C' call paren, 'D' declaration paren, '[', '{'.
+	HashMap<int, String> bracket_stack_cache;
 
 	HashMap<StringName, Color> class_names;
 	HashMap<StringName, Color> reserved_keywords;
@@ -77,6 +79,7 @@ private:
 		MEMBER,
 		IDENTIFIER,
 		TYPE,
+		NAMED_ARGUMENT,
 	};
 
 	// Colors.
@@ -95,6 +98,7 @@ private:
 	Color annotation_color;
 	Color string_name_color;
 	Color type_color;
+	Color named_argument_color;
 
 	enum CommentMarkerLevel {
 		COMMENT_MARKER_CRITICAL,

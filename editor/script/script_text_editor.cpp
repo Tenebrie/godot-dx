@@ -1207,7 +1207,10 @@ void ScriptTextEditor::_lookup_symbol(const String &p_symbol, int p_row, int p_c
 	ScriptLanguage::LookupResult result;
 	String code_text = code_editor->get_text_editor()->get_text_with_cursor_char(p_row, p_column);
 	Error lc_error = script->get_language()->lookup_code(code_text, p_symbol, script->get_path(), base, result);
-	if (ScriptServer::is_global_class(p_symbol)) {
+	// A context-specific lookup result (e.g. an enum value shadowing a class name) takes
+	// priority over the bare global-class name match.
+	const bool lookup_resolved_other_symbol = lc_error == OK && !(result.type == ScriptLanguage::LOOKUP_RESULT_CLASS && result.class_name == p_symbol);
+	if (ScriptServer::is_global_class(p_symbol) && !lookup_resolved_other_symbol) {
 		const String class_path = ScriptServer::get_global_class_path(p_symbol);
 		if (class_path == script->get_path()) {
 			// Already inside this class; "jumping" to the same file would be a

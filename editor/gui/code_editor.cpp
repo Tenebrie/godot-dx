@@ -1052,7 +1052,7 @@ void CodeTextEditor::_complete_request() {
 		} else if (e.insert_text.begins_with("#") || e.insert_text.begins_with("//")) {
 			font_color = completion_comment_color;
 		}
-		text_editor->add_code_completion_option((CodeEdit::CodeCompletionKind)e.kind, e.display, e.insert_text, font_color, _get_completion_icon(e), e.default_value, e.location, e.type_text);
+		text_editor->add_code_completion_option((CodeEdit::CodeCompletionKind)e.kind, e.display, e.insert_text, font_color, _get_completion_icon(e), e.default_value, e.location, e.type_text, e.replace_prefix);
 	}
 	text_editor->update_code_completion_options(forced);
 }
@@ -2105,7 +2105,7 @@ CodeTextEditor::CodeTextEditor() {
 	text_editor->connect("caret_changed", callable_mp(this, &CodeTextEditor::_line_col_changed));
 	text_editor->connect(SceneStringName(text_changed), callable_mp(this, &CodeTextEditor::_text_changed));
 	text_editor->connect("code_completion_requested", callable_mp(this, &CodeTextEditor::_complete_request));
-	TypedArray<String> cs = { ".", ",", "(", "=", "$", "@", "\"", "\'" };
+	TypedArray<String> cs = { ".", ",", "(", "=", "$", "@", "\"", "\'", ":" };
 	text_editor->set_code_completion_prefixes(cs);
 	idle->connect("timeout", callable_mp(this, &CodeTextEditor::_text_changed_idle_timeout));
 
