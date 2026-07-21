@@ -1,0 +1,2 @@
+GDTEST_ANALYZER_ERROR
+>> ERROR at line 6: The function "my_func()" does not have a parameter named "gamma".

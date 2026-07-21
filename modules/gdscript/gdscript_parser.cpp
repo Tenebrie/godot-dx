@@ -3806,10 +3806,32 @@ GDScriptParser::ExpressionNode *GDScriptParser::parse_call(ExpressionNode *p_pre
 		if (argument == nullptr) {
 			push_error(R"(Expected expression as the function argument.)");
 		} else {
-			call->arguments.push_back(argument);
+			StringName argument_name;
+			if (argument->type == Node::IDENTIFIER && match(GDScriptTokenizer::Token::COLON)) {
+				argument_name = static_cast<IdentifierNode *>(argument)->name;
+				argument = parse_expression(false);
+				if (argument == nullptr) {
+					push_error(vformat(R"*(Expected expression as the value of the named argument "%s".)*", argument_name));
+				}
+			}
+			if (argument != nullptr) {
+				if (argument_name != StringName()) {
+					if (call->argument_names.is_empty() && call->arguments.size() > 0) {
+						call->argument_names.resize(call->arguments.size());
+					}
+					if (call->argument_names.has(argument_name)) {
+						push_error(vformat(R"*(The argument "%s" was already passed by name in this call.)*", argument_name), argument);
+					}
+					call->argument_names.push_back(argument_name);
+				} else if (!call->argument_names.is_empty()) {
+					push_error(R"(Positional arguments must come before named arguments.)", argument);
+					call->argument_names.push_back(StringName());
+				}
+				call->arguments.push_back(argument);
 
-			if (argument->type == Node::LITERAL) {
-				override_completion_context(argument, ct, call, argument_index);
+				if (argument->type == Node::LITERAL) {
+					override_completion_context(argument, ct, call, argument_index);
+				}
 			}
 		}
 

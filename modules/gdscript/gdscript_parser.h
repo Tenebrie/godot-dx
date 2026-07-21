@@ -520,9 +520,25 @@ public:
 	struct CallNode : public ExpressionNode {
 		ExpressionNode *callee = nullptr;
 		Vector<ExpressionNode *> arguments;
+		Vector<StringName> argument_names; // Parallel to `arguments` when any named argument is present; empty StringName for positional entries.
+		Vector<int> argument_positions; // Set by the analyzer: written argument index -> parameter slot. Empty means identity.
+		Vector<int> injected_default_positions; // Parameter slots skipped at the call site, filled from constant defaults.
+		Vector<Variant> injected_default_values;
 		StringName function_name;
 		bool is_super = false;
 		bool is_static = false;
+
+		bool has_named_arguments() const {
+			return !argument_names.is_empty();
+		}
+
+		int argument_position(int p_index) const {
+			return argument_positions.is_empty() ? p_index : argument_positions[p_index];
+		}
+
+		int effective_argument_count() const {
+			return argument_positions.is_empty() ? arguments.size() : arguments.size() + injected_default_positions.size();
+		}
 
 		CallNode() {
 			type = CALL;

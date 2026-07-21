@@ -647,13 +647,28 @@ GDScriptCodeGenerator::Address GDScriptCompiler::_parse_expression(CodeGen &code
 				}
 			}
 
-			Vector<GDScriptCodeGenerator::Address> arguments;
+			Vector<GDScriptCodeGenerator::Address> evaluated_arguments;
 			for (int i = 0; i < call->arguments.size(); i++) {
 				GDScriptCodeGenerator::Address arg = _parse_expression(codegen, r_error, call->arguments[i]);
 				if (r_error) {
 					return GDScriptCodeGenerator::Address();
 				}
-				arguments.push_back(arg);
+				evaluated_arguments.push_back(arg);
+			}
+
+			Vector<GDScriptCodeGenerator::Address> arguments = evaluated_arguments;
+			if (!call->argument_positions.is_empty()) {
+				arguments.resize(call->effective_argument_count());
+				for (int i = 0; i < evaluated_arguments.size(); i++) {
+					arguments.write[call->argument_positions[i]] = evaluated_arguments[i];
+				}
+				for (int i = 0; i < call->injected_default_positions.size(); i++) {
+					arguments.write[call->injected_default_positions[i]] = codegen.add_constant(call->injected_default_values[i]);
+				}
+			} else if (call->has_named_arguments()) {
+				_set_error("Compiler bug (please report): named arguments were not resolved by the analyzer.", call);
+				r_error = ERR_COMPILATION_FAILED;
+				return GDScriptCodeGenerator::Address();
 			}
 
 			if (!call->is_super && call->callee->type == GDScriptParser::Node::IDENTIFIER && GDScriptParser::get_builtin_type(call->function_name) < Variant::VARIANT_MAX) {
@@ -777,8 +792,8 @@ GDScriptCodeGenerator::Address GDScriptCompiler::_parse_expression(CodeGen &code
 				}
 			}
 
-			for (int i = 0; i < arguments.size(); i++) {
-				if (arguments[i].mode == GDScriptCodeGenerator::Address::TEMPORARY) {
+			for (int i = 0; i < evaluated_arguments.size(); i++) {
+				if (evaluated_arguments[i].mode == GDScriptCodeGenerator::Address::TEMPORARY) {
 					gen->pop_temporary();
 				}
 			}

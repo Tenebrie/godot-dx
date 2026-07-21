@@ -1,0 +1,2 @@
+GDTEST_ANALYZER_ERROR
+>> ERROR at line 6: The argument "alpha" was already passed positionally in the call to "my_func()".

@@ -1,0 +1,2 @@
+GDTEST_ANALYZER_ERROR
+>> ERROR at line 3: Cannot use named arguments in the call to "do_thing()" because the function cannot be resolved at compile time. Named arguments require a statically-typed call target.

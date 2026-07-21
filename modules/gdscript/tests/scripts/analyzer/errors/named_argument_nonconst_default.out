@@ -1,0 +1,2 @@
+GDTEST_ANALYZER_ERROR
+>> ERROR at line 9: Cannot skip the parameter "beta" in the call to "my_func()" because its default value is not a constant.
