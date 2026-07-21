@@ -155,6 +155,8 @@ static const char *token_names[] = {
 	// Optional chaining
 	"?.", // QUESTION_PERIOD,
 	"?[", // QUESTION_BRACKET_OPEN,
+	// Coalescing
+	"??", // QUESTION_QUESTION,
 	// Special
 	"Error", // ERROR,
 	"End of file", // EOF,
@@ -1463,7 +1465,10 @@ GDScriptTokenizer::Token GDScriptTokenizerText::scan() {
 		case '$':
 			return make_token(Token::DOLLAR);
 		case '?':
-			if (_peek() == '.') {
+			if (_peek() == '?') {
+				_advance();
+				return make_token(Token::QUESTION_QUESTION);
+			} else if (_peek() == '.') {
 				_advance();
 				return make_token(Token::QUESTION_PERIOD);
 			} else if (_peek() == '[') {

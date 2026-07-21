@@ -160,6 +160,8 @@ public:
 			// Optional chaining
 			QUESTION_PERIOD,
 			QUESTION_BRACKET_OPEN,
+			// Coalescing
+			QUESTION_QUESTION,
 			// Special
 			ERROR,
 			TK_EOF, // "EOF" is reserved

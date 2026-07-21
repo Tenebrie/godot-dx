@@ -3292,6 +3292,9 @@ GDScriptParser::ExpressionNode *GDScriptParser::parse_binary_operator(Expression
 			operation->operation = BinaryOpNode::OP_CONTENT_TEST;
 			operation->variant_op = Variant::OP_IN;
 			break;
+		case GDScriptTokenizer::Token::QUESTION_QUESTION:
+			operation->operation = BinaryOpNode::OP_COALESCE;
+			break;
 		case GDScriptTokenizer::Token::EQUAL_EQUAL:
 			operation->operation = BinaryOpNode::OP_COMP_EQUAL;
 			operation->variant_op = Variant::OP_EQUAL;
@@ -4670,6 +4673,8 @@ GDScriptParser::ParseRule *GDScriptParser::get_rule(GDScriptTokenizer::Token::Ty
 		// Optional chaining
 		{ nullptr,                                          &GDScriptParser::parse_attribute,            	PREC_ATTRIBUTE }, // QUESTION_PERIOD,
 		{ nullptr,                                          &GDScriptParser::parse_subscript,            	PREC_SUBSCRIPT }, // QUESTION_BRACKET_OPEN,
+		// Coalescing
+		{ nullptr,                                          &GDScriptParser::parse_binary_operator,      	PREC_COALESCE }, // QUESTION_QUESTION,
 		// Special
 		{ nullptr,                                          nullptr,                                        PREC_NONE }, // ERROR,
 		{ nullptr,                                          nullptr,                                        PREC_NONE }, // TK_EOF,

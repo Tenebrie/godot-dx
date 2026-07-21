@@ -3354,6 +3354,35 @@ void GDScriptAnalyzer::reduce_binary_op(GDScriptParser::BinaryOpNode *p_binary_o
 		return;
 	}
 
+	if (p_binary_op->operation == GDScriptParser::BinaryOpNode::OP_COALESCE) {
+		// `a ?? b` keeps `a` when truthy, so the result is one of the two
+		// operands unchanged: their common type when they agree, weak Variant
+		// otherwise.
+		GDScriptParser::DataType result_type;
+		if (left_type == right_type) {
+			result_type = left_type;
+		} else {
+			result_type.kind = GDScriptParser::DataType::VARIANT;
+			result_type.type_source = GDScriptParser::DataType::INFERRED;
+		}
+		if (p_binary_op->left_operand->is_constant && !p_binary_op->left_operand->reduced_value.is_shared()) {
+			if (p_binary_op->left_operand->reduced_value.booleanize()) {
+				p_binary_op->is_constant = true;
+				p_binary_op->reduced_value = p_binary_op->left_operand->reduced_value;
+				result_type = left_type;
+			} else if (p_binary_op->right_operand->is_constant && !p_binary_op->right_operand->reduced_value.is_shared()) {
+				p_binary_op->is_constant = true;
+				p_binary_op->reduced_value = p_binary_op->right_operand->reduced_value;
+				result_type = right_type;
+			} else {
+				// Constant falsy left side: the result is always the right side.
+				result_type = right_type;
+			}
+		}
+		p_binary_op->set_datatype(result_type);
+		return;
+	}
+
 #ifdef DEBUG_ENABLED
 	if (p_binary_op->variant_op == Variant::OP_DIVIDE &&
 			(left_type.builtin_type == Variant::INT ||

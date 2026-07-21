@@ -491,6 +491,8 @@ public:
 			OP_COMP_LESS_EQUAL,
 			OP_COMP_GREATER,
 			OP_COMP_GREATER_EQUAL,
+			// `a ?? b`: `a` if truthy (evaluated once), otherwise `b`.
+			OP_COALESCE,
 		};
 
 		OpType operation = OpType::OP_ADDITION;
@@ -1463,6 +1465,7 @@ private:
 		PREC_ASSIGNMENT,
 		PREC_CAST,
 		PREC_TERNARY,
+		PREC_COALESCE,
 		PREC_LOGIC_OR,
 		PREC_LOGIC_AND,
 		PREC_LOGIC_NOT,
