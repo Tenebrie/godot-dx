@@ -41,9 +41,10 @@ class SyntaxHighlighter : public Resource {
 
 private:
 	RBMap<int, Dictionary> highlighting_cache;
-	void _lines_edited_from(int p_from_line, int p_to_line);
 
 protected:
+	virtual void _lines_edited_from(int p_from_line, int p_to_line);
+
 	ObjectID text_edit_instance_id; // For validity check
 	TextEdit *text_edit = nullptr;
 

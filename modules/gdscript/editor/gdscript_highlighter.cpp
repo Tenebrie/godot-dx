@@ -83,22 +83,19 @@ Dictionary GDScriptSyntaxHighlighter::_get_line_syntax_highlighting_impl(int p_l
 
 	color_region_cache[p_line] = -1;
 	int in_region = -1;
+	String bracket_stack;
 	if (p_line != 0) {
 		int prev_region_line = p_line - 1;
-		while (prev_region_line > 0 && !color_region_cache.has(prev_region_line)) {
+		while (prev_region_line > 0 && !(color_region_cache.has(prev_region_line) && bracket_stack_cache.has(prev_region_line))) {
 			prev_region_line--;
 		}
 		for (int i = prev_region_line; i < p_line - 1; i++) {
 			get_line_syntax_highlighting(i);
 		}
-		if (!color_region_cache.has(p_line - 1)) {
+		if (!color_region_cache.has(p_line - 1) || !bracket_stack_cache.has(p_line - 1)) {
 			get_line_syntax_highlighting(p_line - 1);
 		}
 		in_region = color_region_cache[p_line - 1];
-	}
-
-	String bracket_stack;
-	if (p_line != 0 && bracket_stack_cache.has(p_line - 1)) {
 		bracket_stack = bracket_stack_cache[p_line - 1];
 	}
 
@@ -828,6 +825,33 @@ PackedStringArray GDScriptSyntaxHighlighter::_get_supported_languages() const {
 	PackedStringArray languages;
 	languages.push_back("GDScript");
 	return languages;
+}
+
+void GDScriptSyntaxHighlighter::_lines_edited_from(int p_from_line, int p_to_line) {
+	SyntaxHighlighter::_lines_edited_from(p_from_line, p_to_line);
+
+	// Line-chained state (regions, bracket stacks) below the edit is stale.
+	// Erase it so `_get_line_syntax_highlighting_impl` recomputes the chain
+	// instead of trusting entries recorded against the pre-edit text.
+	const int from_line = MIN(p_from_line, p_to_line) - 1;
+	LocalVector<int> stale_lines;
+	for (const KeyValue<int, int> &E : color_region_cache) {
+		if (E.key >= from_line) {
+			stale_lines.push_back(E.key);
+		}
+	}
+	for (const int line : stale_lines) {
+		color_region_cache.erase(line);
+	}
+	stale_lines.clear();
+	for (const KeyValue<int, String> &E : bracket_stack_cache) {
+		if (E.key >= from_line) {
+			stale_lines.push_back(E.key);
+		}
+	}
+	for (const int line : stale_lines) {
+		bracket_stack_cache.erase(line);
+	}
 }
 
 void GDScriptSyntaxHighlighter::_update_cache() {
