@@ -56,7 +56,8 @@ private:
 	};
 	Vector<ColorRegion> color_regions;
 	HashMap<int, int> color_region_cache;
-	// End-of-line bracket nesting, innermost last: 'C' call paren, 'D' declaration paren, '[', '{'.
+	// End-of-line nesting context, innermost last: 'C' call paren, 'D' declaration paren,
+	// 'E' enum brace, 'L' lambda body (open until `,` or `)`), '[', '{'.
 	HashMap<int, String> bracket_stack_cache;
 
 	HashMap<StringName, Color> class_names;

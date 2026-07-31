@@ -63,6 +63,7 @@ Dictionary GDScriptSyntaxHighlighter::_get_line_syntax_highlighting_impl(int p_l
 	bool is_bin_notation = false;
 	bool in_member_variable = false;
 	bool in_named_argument = false;
+	int named_argument_colon_col = -1;
 	bool in_lambda = false;
 
 	bool in_function_name = false; // Any call.
@@ -573,7 +574,7 @@ Dictionary GDScriptSyntaxHighlighter::_get_line_syntax_highlighting_impl(int p_l
 		}
 
 		// A bare identifier followed by `:` directly inside call parentheses is a named argument.
-		if (!in_named_argument && !in_function_name && !in_member_variable && !in_keyword && !in_number && in_word && bracket_stack.ends_with("C")) {
+		if (!in_named_argument && !in_function_name && !in_member_variable && !in_keyword && !in_number && !expect_type && in_word && bracket_stack.ends_with("C")) {
 			int k = j;
 			while (k < line_length && !is_symbol(str[k]) && !is_whitespace(str[k])) {
 				k++;
@@ -583,6 +584,7 @@ Dictionary GDScriptSyntaxHighlighter::_get_line_syntax_highlighting_impl(int p_l
 			}
 			if (k < line_length && str[k] == ':' && (k + 1 >= line_length || (str[k + 1] != '=' && str[k + 1] != ':'))) {
 				in_named_argument = true;
+				named_argument_colon_col = k;
 			}
 		}
 
@@ -623,8 +625,24 @@ Dictionary GDScriptSyntaxHighlighter::_get_line_syntax_highlighting_impl(int p_l
 					}
 					break;
 				case ')':
+					while (bracket_stack.ends_with("L")) {
+						bracket_stack = bracket_stack.left(bracket_stack.length() - 1);
+					}
 					if (bracket_stack.ends_with("C") || bracket_stack.ends_with("D")) {
 						bracket_stack = bracket_stack.left(bracket_stack.length() - 1);
+					}
+					break;
+				case ',':
+					// A comma at lambda-body level ends the lambda argument, back to the enclosing call.
+					while (bracket_stack.ends_with("L")) {
+						bracket_stack = bracket_stack.left(bracket_stack.length() - 1);
+					}
+					break;
+				case ':':
+					// A block-header colon at argument level starts a lambda body: statements until
+					// `,` or `)`, not arguments. A named argument's own `:` does not open a block.
+					if (j != named_argument_colon_col && bracket_stack.ends_with("C") && (j + 1 >= line_length || (str[j + 1] != '=' && str[j + 1] != ':')) && (j == 0 || str[j - 1] != ':')) {
+						bracket_stack += "L";
 					}
 					break;
 				case '[':
