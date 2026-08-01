@@ -2304,6 +2304,11 @@ GDScriptParser::AssertNode *GDScriptParser::parse_assert() {
 		return nullptr;
 	}
 
+	// Register any `is Type name` binds in the enclosing suite so the narrowed
+	// value is visible in the statements following the `assert` (which only
+	// execute when the assertion held).
+	register_assert_type_test_binds(assert->condition, true);
+
 	if (match(GDScriptTokenizer::Token::COMMA) && !check(GDScriptTokenizer::Token::PARENTHESIS_CLOSE)) {
 		assert->message = parse_expression(false);
 		if (assert->message == nullptr) {
@@ -2508,6 +2513,65 @@ void GDScriptParser::register_if_type_test_binds_negated(ExpressionNode *p_expre
 			bool child_context = p_in_false_context && bop->operation == BinaryOpNode::OP_LOGIC_OR;
 			register_if_type_test_binds_negated(bop->left_operand, p_outer_suite, p_true_block_always_exits, child_context);
 			register_if_type_test_binds_negated(bop->right_operand, p_outer_suite, p_true_block_always_exits, child_context);
+		} break;
+		default:
+			break;
+	}
+}
+
+// Walks an `assert` condition and registers any `is Type name` binds as
+// `PATTERN_BIND` locals in the enclosing suite, so the narrowed value is
+// visible in the statements following the `assert`. Same guarantee rule as
+// `if`: a bind is only accepted at the top level or under `and` chains.
+// `is not Type name` has no fall-through branch in an `assert`, so it is
+// always rejected here.
+void GDScriptParser::register_assert_type_test_binds(ExpressionNode *p_expression, bool p_in_true_context) {
+	if (p_expression == nullptr || current_suite == nullptr) {
+		return;
+	}
+	switch (p_expression->type) {
+		case Node::TYPE_TEST: {
+			TypeTestNode *tt = static_cast<TypeTestNode *>(p_expression);
+			if (tt->bound_name != nullptr) {
+				if (!p_in_true_context) {
+					push_error(R"(Type-test bind is only allowed when the test is guaranteed to be true after the assert (top level or under "and" chains).)", tt->bound_name);
+				} else if (current_suite->locals_indices.has(tt->bound_name->name)) {
+					const SuiteNode::Local &existing = current_suite->locals[current_suite->locals_indices[tt->bound_name->name]];
+					push_error(vformat(R"(There is already a %s named "%s" declared in this scope.)", existing.get_name(), tt->bound_name->name), tt->bound_name);
+				} else if (current_suite->has_local(tt->bound_name->name)) {
+					const SuiteNode::Local &outer = current_suite->get_local(tt->bound_name->name);
+					push_error(vformat(R"(Type-test bind "%s" shadows an existing %s.)", tt->bound_name->name, outer.get_name()), tt->bound_name);
+				} else {
+					SuiteNode::Local local(tt->bound_name, current_function);
+					local.type = SuiteNode::Local::PATTERN_BIND;
+					current_suite->add_local(local);
+				}
+			}
+			register_assert_type_test_binds(tt->operand, false);
+		} break;
+		case Node::BINARY_OPERATOR: {
+			BinaryOpNode *bop = static_cast<BinaryOpNode *>(p_expression);
+			bool child_context = p_in_true_context && bop->operation == BinaryOpNode::OP_LOGIC_AND;
+			register_assert_type_test_binds(bop->left_operand, child_context);
+			register_assert_type_test_binds(bop->right_operand, child_context);
+		} break;
+		case Node::UNARY_OPERATOR: {
+			UnaryOpNode *uop = static_cast<UnaryOpNode *>(p_expression);
+			if (uop->operation == UnaryOpNode::OP_LOGIC_NOT && uop->operand != nullptr && uop->operand->type == Node::TYPE_TEST) {
+				TypeTestNode *tt = static_cast<TypeTestNode *>(uop->operand);
+				if (tt->bound_name != nullptr) {
+					push_error(R"("is not Type name" bind is not allowed in "assert".)", tt->bound_name);
+					register_assert_type_test_binds(tt->operand, false);
+					break;
+				}
+			}
+			register_assert_type_test_binds(uop->operand, false);
+		} break;
+		case Node::TERNARY_OPERATOR: {
+			TernaryOpNode *top = static_cast<TernaryOpNode *>(p_expression);
+			register_assert_type_test_binds(top->condition, false);
+			register_assert_type_test_binds(top->true_expr, false);
+			register_assert_type_test_binds(top->false_expr, false);
 		} break;
 		default:
 			break;

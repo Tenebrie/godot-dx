@@ -2007,6 +2007,43 @@ bool GDScriptCompiler::_condition_has_type_test_bind(const GDScriptParser::Expre
 	}
 }
 
+// In release builds `assert` compiles to nothing, but `is Type name` binds in
+// its condition are used by the following statements, so the operand of each
+// bound type-test is still evaluated and copied into the bound local.
+void GDScriptCompiler::_compile_assert_type_test_binds(CodeGen &codegen, Error &r_error, const GDScriptParser::ExpressionNode *p_expression) {
+	if (p_expression == nullptr) {
+		return;
+	}
+	switch (p_expression->type) {
+		case GDScriptParser::Node::TYPE_TEST: {
+			const GDScriptParser::TypeTestNode *tt = static_cast<const GDScriptParser::TypeTestNode *>(p_expression);
+			if (tt->bound_name != nullptr) {
+				HashMap<StringName, GDScriptCodeGenerator::Address>::Iterator bind_it = codegen.locals.find(tt->bound_name->name);
+				if (bind_it != codegen.locals.end()) {
+					GDScriptCodeGenerator::Address operand = _parse_expression(codegen, r_error, tt->operand);
+					if (r_error) {
+						return;
+					}
+					codegen.generator->write_assign(bind_it->value, operand);
+					if (operand.mode == GDScriptCodeGenerator::Address::TEMPORARY) {
+						codegen.generator->pop_temporary();
+					}
+				}
+			}
+		} break;
+		case GDScriptParser::Node::BINARY_OPERATOR: {
+			const GDScriptParser::BinaryOpNode *bop = static_cast<const GDScriptParser::BinaryOpNode *>(p_expression);
+			_compile_assert_type_test_binds(codegen, r_error, bop->left_operand);
+			if (r_error) {
+				return;
+			}
+			_compile_assert_type_test_binds(codegen, r_error, bop->right_operand);
+		} break;
+		default:
+			break;
+	}
+}
+
 List<GDScriptCodeGenerator::Address> GDScriptCompiler::_add_block_locals(CodeGen &codegen, const GDScriptParser::SuiteNode *p_block) {
 	List<GDScriptCodeGenerator::Address> addresses;
 	for (int i = 0; i < p_block->locals.size(); i++) {
@@ -2339,9 +2376,8 @@ Error GDScriptCompiler::_parse_block(CodeGen &codegen, const GDScriptParser::Sui
 				}
 			} break;
 			case GDScriptParser::Node::ASSERT: {
-#ifdef DEBUG_ENABLED
 				const GDScriptParser::AssertNode *as = static_cast<const GDScriptParser::AssertNode *>(s);
-
+#ifdef DEBUG_ENABLED
 				GDScriptCodeGenerator::Address condition = _parse_expression(codegen, err, as->condition);
 				if (err) {
 					return err;
@@ -2362,6 +2398,11 @@ Error GDScriptCompiler::_parse_block(CodeGen &codegen, const GDScriptParser::Sui
 				}
 				if (message.mode == GDScriptCodeGenerator::Address::TEMPORARY) {
 					codegen.generator->pop_temporary();
+				}
+#else
+				_compile_assert_type_test_binds(codegen, err, as->condition);
+				if (err) {
+					return err;
 				}
 #endif
 			} break;

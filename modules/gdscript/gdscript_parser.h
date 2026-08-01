@@ -1642,6 +1642,7 @@ private:
 	IfNode *parse_if(const String &p_token = "if");
 	void register_if_type_test_binds(ExpressionNode *p_expression, SuiteNode *p_true_block, bool p_in_true_context);
 	void register_if_type_test_binds_negated(ExpressionNode *p_expression, SuiteNode *p_outer_suite, bool p_true_block_always_exits, bool p_in_false_context);
+	void register_assert_type_test_binds(ExpressionNode *p_expression, bool p_in_true_context);
 	bool condition_has_negated_type_test_bind(ExpressionNode *p_expression);
 	static bool suite_always_exits(const SuiteNode *p_suite);
 	MatchNode *parse_match();
