@@ -80,6 +80,12 @@ public:
   void Triangulate();
 
   /**
+   * True when Triangulate() gave up on degenerate input (self-touching rings, repeated
+   * points, holes touching the outer ring). The triangle output is unusable in that case.
+   */
+  bool HasFailed() const;
+
+  /**
    * Get CDT triangles
    */
   std::vector<Triangle*> GetTriangles();

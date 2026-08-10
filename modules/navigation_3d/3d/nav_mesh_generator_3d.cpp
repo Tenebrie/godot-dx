@@ -37,6 +37,8 @@
 #include "scene/resources/3d/navigation_mesh_source_geometry_data_3d.h"
 #include "scene/resources/navigation_mesh.h"
 
+#include <map>
+
 #include <Recast.h>
 
 #ifdef CLIPPER2_ENABLED
@@ -309,6 +311,76 @@ void NavMeshGenerator3D::generator_parse_source_geometry_data(const Ref<Navigati
 }
 
 #ifdef CLIPPER2_ENABLED
+// Append ear-clipped triangles to the navigation polygon soup, reversing the winding the same
+// way as the CDT path so the polygons face along the plane normal.
+static void generator_flat_emit_tppl_triangles(
+		const List<TPPLPoly> &p_triangles,
+		Vector<Vector3> &r_nav_vertices,
+		Vector<Vector<int>> &r_nav_polygons,
+		HashMap<Vector3, int> &r_point_to_index,
+		const Vector3 &p_plane_origin,
+		const Vector3 &p_basis_u,
+		const Vector3 &p_basis_v) {
+	for (const TPPLPoly &tp : p_triangles) {
+		const int point_count = tp.GetNumPoints();
+		Vector<int> nav_polygon;
+		nav_polygon.resize(point_count);
+		for (int64_t i = 0; i < point_count; i++) {
+			const Vector2 &point = tp[i];
+			const Vector3 world_vertex = p_plane_origin + p_basis_u * (real_t)point.x + p_basis_v * (real_t)point.y;
+			HashMap<Vector3, int>::Iterator E = r_point_to_index.find(world_vertex);
+			if (!E) {
+				E = r_point_to_index.insert(world_vertex, r_nav_vertices.size());
+				r_nav_vertices.push_back(world_vertex);
+			}
+			nav_polygon.write[point_count - 1 - i] = E->value;
+		}
+		r_nav_polygons.push_back(nav_polygon);
+	}
+}
+
+// Ear-clipping fallback for islands whose rings the CDT rejects (e.g. a hole sharing a vertex
+// with its outer ring). Ear clipping tolerates such weakly-simple input at the cost of sliver
+// triangles, which beats dropping the island from the navigation mesh entirely.
+static bool generator_flat_triangulate_island_earclip(
+		const Clipper2Lib::PathD &p_outer_ring,
+		const std::vector<const Clipper2Lib::PathD *> &p_hole_rings,
+		Vector<Vector3> &r_nav_vertices,
+		Vector<Vector<int>> &r_nav_polygons,
+		HashMap<Vector3, int> &r_point_to_index,
+		const Vector3 &p_plane_origin,
+		const Vector3 &p_basis_u,
+		const Vector3 &p_basis_v) {
+	List<TPPLPoly> tppl_in_polygon;
+	List<TPPLPoly> tppl_out_polygon;
+	auto add_ring = [&tppl_in_polygon](const Clipper2Lib::PathD &p_ring, bool p_hole) {
+		TPPLPoly tp;
+		tp.Init((long)p_ring.size());
+		int j = 0;
+		for (const Clipper2Lib::PointD &point : p_ring) {
+			tp[j] = Vector2(static_cast<real_t>(point.x), static_cast<real_t>(point.y));
+			++j;
+		}
+		if (p_hole) {
+			tp.SetOrientation(TPPL_ORIENTATION_CW);
+			tp.SetHole(true);
+		} else {
+			tp.SetOrientation(TPPL_ORIENTATION_CCW);
+		}
+		tppl_in_polygon.push_back(tp);
+	};
+	add_ring(p_outer_ring, false);
+	for (const Clipper2Lib::PathD *hole_ring : p_hole_rings) {
+		add_ring(*hole_ring, true);
+	}
+	TPPLPartition tpart;
+	if (tpart.Triangulate_EC(&tppl_in_polygon, &tppl_out_polygon) == 0) {
+		return false;
+	}
+	generator_flat_emit_tppl_triangles(tppl_out_polygon, r_nav_vertices, r_nav_polygons, r_point_to_index, p_plane_origin, p_basis_u, p_basis_v);
+	return true;
+}
+
 // Triangulate a single "outer" polytree node (an island of walkable area) with its immediate hole
 // children using poly2tri's constrained Delaunay triangulation. Recurses into island-in-hole nesting.
 static void generator_flat_triangulate_outer(
@@ -321,58 +393,145 @@ static void generator_flat_triangulate_outer(
 		const Vector3 &p_basis_v) {
 	using namespace Clipper2Lib;
 
-	// Own all p2t::Point allocations so poly2tri can hold raw pointers into them.
-	std::vector<p2t::Point *> owned_points;
-
-	auto build_ring = [&owned_points](const PolyPathD *p_ring_node, std::vector<p2t::Point *> &r_out) {
-		r_out.reserve(p_ring_node->Polygon().size());
-		for (const PointD &polypath_point : p_ring_node->Polygon()) {
-			p2t::Point *p = new p2t::Point(polypath_point.x, polypath_point.y);
-			owned_points.push_back(p);
-			r_out.push_back(p);
+	// poly2tri only accepts simple rings with non-repeating points, but Clipper2 output is merely
+	// weakly simple: a ring legally revisits a vertex wherever the area pinches to a single point
+	// (obstacle footprints touching, or agent-radius erosion closing a gap exactly). Feeding such a
+	// ring to poly2tri corrupts its sweep and used to kill the process, so drop repeated points and
+	// split every pinched ring into its simple sub-rings first.
+	auto sanitize_ring = [](const PathD &p_ring) -> PathD {
+		PathD ring;
+		ring.reserve(p_ring.size());
+		for (const PointD &point : p_ring) {
+			if (ring.empty() || !(ring.back() == point)) {
+				ring.push_back(point);
+			}
 		}
+		while (ring.size() > 1 && ring.front() == ring.back()) {
+			ring.pop_back();
+		}
+		return ring;
 	};
 
-	std::vector<p2t::Point *> outer;
-	build_ring(p_outer_node, outer);
-
-	// A ring with fewer than 3 vertices cannot be triangulated; skip but still recurse into any islands.
-	if (outer.size() >= 3) {
-		p2t::CDT cdt(outer);
-
-		for (size_t i = 0; i < p_outer_node->Count(); i++) {
-			const PolyPathD *hole_node = p_outer_node->Child(i);
-			std::vector<p2t::Point *> hole;
-			build_ring(hole_node, hole);
-			if (hole.size() >= 3) {
-				cdt.AddHole(hole);
+	auto split_ring_at_pinch_points = [](const PathD &p_ring) -> std::vector<PathD> {
+		std::vector<PathD> simple_rings;
+		PathD working;
+		working.reserve(p_ring.size());
+		for (const PointD &point : p_ring) {
+			size_t revisited_index = working.size();
+			for (size_t i = 0; i < working.size(); i++) {
+				if (working[i] == point) {
+					revisited_index = i;
+					break;
+				}
 			}
+			if (revisited_index < working.size()) {
+				PathD pinched_loop(working.begin() + revisited_index, working.end());
+				if (pinched_loop.size() >= 3) {
+					simple_rings.push_back(std::move(pinched_loop));
+				}
+				working.resize(revisited_index);
+			}
+			working.push_back(point);
+		}
+		if (working.size() >= 3) {
+			simple_rings.push_back(std::move(working));
+		}
+		return simple_rings;
+	};
+
+	// Tangent holes can rest entirely on the sub-ring boundary, so scan for the first vertex with
+	// a decisive inside/outside answer and treat an all-boundary hole as belonging.
+	auto hole_belongs_to_ring = [](const PathD &p_hole_ring, const PathD &p_outer_ring) -> bool {
+		for (const PointD &point : p_hole_ring) {
+			const PointInPolygonResult result = PointInPolygon(point, p_outer_ring);
+			if (result != PointInPolygonResult::IsOn) {
+				return result == PointInPolygonResult::IsInside;
+			}
+		}
+		return true;
+	};
+
+	// Route each simple sub-ring by its winding: positive loops are walkable islands, negative
+	// loops are holes. A pinched loop extracted by the splitter is not necessarily the same kind
+	// of ring as the one it came from (Clipper2 may bridge a tangent hole into the outer ring),
+	// and misrouting one would triangulate walkable floor inside an obstacle.
+	std::vector<PathD> outer_rings;
+	std::vector<PathD> hole_rings;
+	auto route_simple_rings = [&outer_rings, &hole_rings](std::vector<PathD> &&p_rings) {
+		for (PathD &ring : p_rings) {
+			if (Area(ring) > 0.0) {
+				outer_rings.push_back(std::move(ring));
+			} else {
+				hole_rings.push_back(std::move(ring));
+			}
+		}
+	};
+	route_simple_rings(split_ring_at_pinch_points(sanitize_ring(p_outer_node->Polygon())));
+	for (size_t i = 0; i < p_outer_node->Count(); i++) {
+		route_simple_rings(split_ring_at_pinch_points(sanitize_ring(p_outer_node->Child(i)->Polygon())));
+	}
+
+	for (const PathD &outer_ring : outer_rings) {
+		std::vector<const PathD *> island_holes;
+		for (const PathD &hole_ring : hole_rings) {
+			if (outer_rings.size() == 1 || hole_belongs_to_ring(hole_ring, outer_ring)) {
+				island_holes.push_back(&hole_ring);
+			}
+		}
+
+		// Own all p2t::Point allocations so poly2tri can hold raw pointers into them.
+		std::vector<p2t::Point *> owned_points;
+
+		auto build_ring = [&owned_points](const PathD &p_ring, std::vector<p2t::Point *> &r_out) {
+			r_out.reserve(p_ring.size());
+			for (const PointD &point : p_ring) {
+				p2t::Point *p = new p2t::Point(point.x, point.y);
+				owned_points.push_back(p);
+				r_out.push_back(p);
+			}
+		};
+
+		std::vector<p2t::Point *> outer;
+		build_ring(outer_ring, outer);
+
+		p2t::CDT cdt(outer);
+		for (const PathD *hole_ring : island_holes) {
+			std::vector<p2t::Point *> hole;
+			build_ring(*hole_ring, hole);
+			cdt.AddHole(hole);
 		}
 
 		cdt.Triangulate();
-		const std::vector<p2t::Triangle *> triangles = cdt.GetTriangles();
-		for (p2t::Triangle *tri : triangles) {
-			Vector<int> nav_polygon;
-			nav_polygon.resize(3);
-			for (int i = 0; i < 3; i++) {
-				const p2t::Point *pt = tri->GetPoint(i);
-				const Vector3 world_vertex = p_plane_origin + p_basis_u * (real_t)pt->x + p_basis_v * (real_t)pt->y;
-				HashMap<Vector3, int>::Iterator E = r_point_to_index.find(world_vertex);
-				if (!E) {
-					E = r_point_to_index.insert(world_vertex, r_nav_vertices.size());
-					r_nav_vertices.push_back(world_vertex);
+		if (!cdt.HasFailed()) {
+			const std::vector<p2t::Triangle *> triangles = cdt.GetTriangles();
+			for (p2t::Triangle *tri : triangles) {
+				Vector<int> nav_polygon;
+				nav_polygon.resize(3);
+				for (int i = 0; i < 3; i++) {
+					const p2t::Point *pt = tri->GetPoint(i);
+					const Vector3 world_vertex = p_plane_origin + p_basis_u * (real_t)pt->x + p_basis_v * (real_t)pt->y;
+					HashMap<Vector3, int>::Iterator E = r_point_to_index.find(world_vertex);
+					if (!E) {
+						E = r_point_to_index.insert(world_vertex, r_nav_vertices.size());
+						r_nav_vertices.push_back(world_vertex);
+					}
+					// Reverse the winding: poly2tri emits CCW-in-(u,v) triangles, but Godot's navigation
+					// mesh expects the opposite winding so the polygons face along the plane normal
+					// (correct surface normal for the navigation map and backface-culled debug render).
+					nav_polygon.write[2 - i] = E->value;
 				}
-				// Reverse the winding: poly2tri emits CCW-in-(u,v) triangles, but Godot's navigation
-				// mesh expects the opposite winding so the polygons face along the plane normal
-				// (correct surface normal for the navigation map and backface-culled debug render).
-				nav_polygon.write[2 - i] = E->value;
+				r_nav_polygons.push_back(nav_polygon);
 			}
-			r_nav_polygons.push_back(nav_polygon);
+		} else {
+			WARN_PRINT(vformat("NavigationMesh flat baking: CDT rejected island (outer %d pts, %d holes), falling back to ear clipping.", (int)outer_ring.size(), (int)island_holes.size()));
+			if (!generator_flat_triangulate_island_earclip(outer_ring, island_holes, r_nav_vertices, r_nav_polygons, r_point_to_index, p_plane_origin, p_basis_u, p_basis_v)) {
+				WARN_PRINT_ONCE("NavigationMesh flat baking: ear-clipping fallback also failed, skipping an island of walkable area.");
+			}
 		}
-	}
 
-	for (p2t::Point *p : owned_points) {
-		delete p;
+		for (p2t::Point *p : owned_points) {
+			delete p;
+		}
 	}
 
 	// Islands-in-holes: each direct hole child may contain further outer polygons that need their own CDT.
@@ -430,22 +589,7 @@ static bool generator_flat_triangulate_polypartition(
 	if (tpart.Triangulate_EC(&tppl_in_polygon, &tppl_out_polygon) == 0) {
 		return false;
 	}
-	for (const TPPLPoly &tp : tppl_out_polygon) {
-		const int point_count = tp.GetNumPoints();
-		Vector<int> nav_polygon;
-		nav_polygon.resize(point_count);
-		for (int64_t i = 0; i < point_count; i++) {
-			const Vector2 &point = tp[i];
-			const Vector3 world_vertex = p_plane_origin + p_basis_u * (real_t)point.x + p_basis_v * (real_t)point.y;
-			HashMap<Vector3, int>::Iterator E = r_point_to_index.find(world_vertex);
-			if (!E) {
-				E = r_point_to_index.insert(world_vertex, r_nav_vertices.size());
-				r_nav_vertices.push_back(world_vertex);
-			}
-			nav_polygon.write[point_count - 1 - i] = E->value;
-		}
-		r_nav_polygons.push_back(nav_polygon);
-	}
+	generator_flat_emit_tppl_triangles(tppl_out_polygon, r_nav_vertices, r_nav_polygons, r_point_to_index, p_plane_origin, p_basis_u, p_basis_v);
 	return true;
 }
 
@@ -623,6 +767,50 @@ static void generator_bake_flat_from_source_geometry_data(Ref<NavigationMesh> p_
 		carve_obstruction_paths = Union(carve_obstruction_paths, dummy_clip_path, FillRule::NonZero);
 		path_solution = Difference(path_solution, carve_obstruction_paths, FillRule::NonZero);
 	}
+
+	if (path_solution.empty()) {
+		p_navigation_mesh->clear();
+		return;
+	}
+
+	// Wherever the walkable area pinches to a single point (obstacle footprints touching, erosion
+	// closing a gap exactly, a hole tangent to the boundary), Clipper2 reuses one coordinate in
+	// several ring positions and the output is only weakly simple — which poly2tri cannot
+	// triangulate. Such a contact point is impassable anyway, so disconnect it physically by
+	// subtracting a tiny diamond around every reused coordinate. The nick is far below gameplay
+	// relevance and turns every ring into a strictly simple polygon.
+	{
+		std::map<std::pair<double, double>, int> vertex_use_counts;
+		for (const PathD &path : path_solution) {
+			for (const PointD &point : path) {
+				vertex_use_counts[{ point.x, point.y }]++;
+			}
+		}
+		constexpr double pinch_notch_radius = 0.02;
+		PathsD pinch_notches;
+		for (const auto &[vertex, use_count] : vertex_use_counts) {
+			if (use_count < 2) {
+				continue;
+			}
+			PathD notch;
+			notch.reserve(4);
+			notch.emplace_back(vertex.first + pinch_notch_radius, vertex.second);
+			notch.emplace_back(vertex.first, vertex.second + pinch_notch_radius);
+			notch.emplace_back(vertex.first - pinch_notch_radius, vertex.second);
+			notch.emplace_back(vertex.first, vertex.second - pinch_notch_radius);
+			pinch_notches.push_back(std::move(notch));
+		}
+		if (!pinch_notches.empty()) {
+			path_solution = Difference(path_solution, pinch_notches, FillRule::NonZero);
+		}
+	}
+
+	// The boolean pipeline preserves collinear vertices, so a straight boundary assembled from
+	// many small colliders (e.g. tiled wall segments) stays subdivided at the tile pitch. A CDT
+	// has no interior points, so every such vertex must connect to some far vertex, degenerating
+	// open areas into meters-long sliver fans. Dropping (near-)collinear vertices lets the CDT
+	// emit large well-shaped triangles instead; no edge moves by more than 2 mm.
+	path_solution = SimplifyPaths(path_solution, 0.002);
 
 	if (path_solution.empty()) {
 		p_navigation_mesh->clear();

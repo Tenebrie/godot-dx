@@ -129,7 +129,20 @@ struct EdgeEvent {
 Basin basin;
 EdgeEvent edge_event;
 
+// Failure state instead of aborting the process on degenerate input (self-touching rings,
+// repeated points, holes touching the outer ring). This library is built with -fno-exceptions,
+// so callers must poll HasFailed() after Triangulate() and discard the output when set.
+void SetFailed() { failed_ = true; }
+bool HasFailed() const { return failed_; }
+
+// Guards the recursive Edge/Flip/Fill event cascades: degenerate input can otherwise cycle
+// between neighboring triangles forever and overflow the stack.
+int recursion_depth = 0;
+static constexpr int kMaxRecursionDepth = 2000;
+
 private:
+
+bool failed_ = false;
 
 friend class Sweep;
 

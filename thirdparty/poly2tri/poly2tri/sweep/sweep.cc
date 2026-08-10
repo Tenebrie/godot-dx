@@ -38,6 +38,26 @@
 
 namespace p2t {
 
+namespace {
+// Bounds the recursive event cascades; on degenerate input they can otherwise cycle between
+// neighboring triangles forever. Exceeding the budget marks the whole sweep as failed.
+struct RecursionGuard {
+  SweepContext& tcx;
+  bool exceeded;
+  explicit RecursionGuard(SweepContext& p_tcx) : tcx(p_tcx), exceeded(false)
+  {
+    if (++tcx.recursion_depth > SweepContext::kMaxRecursionDepth) {
+      tcx.SetFailed();
+      exceeded = true;
+    }
+  }
+  ~RecursionGuard()
+  {
+    --tcx.recursion_depth;
+  }
+};
+} // namespace
+
 // Triangulate simple polygon with holes
 void Sweep::Triangulate(SweepContext& tcx)
 {
@@ -45,6 +65,9 @@ void Sweep::Triangulate(SweepContext& tcx)
   tcx.CreateAdvancingFront();
   // Sweep points; build mesh
   SweepPoints(tcx);
+  if (tcx.HasFailed()) {
+    return;
+  }
   // Clean up
   FinalizationPolygon(tcx);
 }
@@ -52,8 +75,14 @@ void Sweep::Triangulate(SweepContext& tcx)
 void Sweep::SweepPoints(SweepContext& tcx)
 {
   for (size_t i = 1; i < tcx.point_count(); i++) {
+    if (tcx.HasFailed()) {
+      return;
+    }
     Point& point = *tcx.GetPoint(i);
     Node* node = &PointEvent(tcx, point);
+    if (tcx.HasFailed()) {
+      return;
+    }
     for (auto& j : point.edge_list) {
       EdgeEvent(tcx, j, node);
     }
@@ -80,7 +109,8 @@ Node& Sweep::PointEvent(SweepContext& tcx, Point& point)
   Node* node_ptr = tcx.LocateNode(point);
   if (!node_ptr || !node_ptr->point || !node_ptr->next || !node_ptr->next->point)
   {
-    std::abort();
+    tcx.SetFailed();
+    return *tcx.front()->head();
   }
 
   Node& node = *node_ptr;
@@ -100,6 +130,15 @@ Node& Sweep::PointEvent(SweepContext& tcx, Point& point)
 
 void Sweep::EdgeEvent(SweepContext& tcx, Edge* edge, Node* node)
 {
+  RecursionGuard guard(tcx);
+  if (guard.exceeded || tcx.HasFailed()) {
+    return;
+  }
+  if (node->triangle == nullptr) {
+    tcx.SetFailed();
+    return;
+  }
+
   tcx.edge_event.constrained_edge = edge;
   tcx.edge_event.right = (edge->p->x > edge->q->x);
 
@@ -116,8 +155,13 @@ void Sweep::EdgeEvent(SweepContext& tcx, Edge* edge, Node* node)
 
 void Sweep::EdgeEvent(SweepContext& tcx, Point& ep, Point& eq, Triangle* triangle, Point& point)
 {
+  RecursionGuard guard(tcx);
+  if (guard.exceeded || tcx.HasFailed()) {
+    return;
+  }
   if (triangle == nullptr) {
-    std::abort();
+    tcx.SetFailed();
+    return;
   }
   if (IsEdgeSideOfTriangle(*triangle, ep, eq)) {
     return;
@@ -134,7 +178,7 @@ void Sweep::EdgeEvent(SweepContext& tcx, Point& ep, Point& eq, Triangle* triangl
       triangle = triangle->NeighborAcross(point);
       EdgeEvent(tcx, ep, *p1, triangle, *p1);
     } else {
-      std::abort();
+      tcx.SetFailed();
     }
     return;
   }
@@ -150,7 +194,7 @@ void Sweep::EdgeEvent(SweepContext& tcx, Point& ep, Point& eq, Triangle* triangl
       triangle = triangle->NeighborAcross(point);
       EdgeEvent(tcx, ep, *p2, triangle, *p2);
     } else {
-      std::abort();
+      tcx.SetFailed();
     }
     return;
   }
@@ -376,6 +420,10 @@ double Sweep::HoleAngle(const Node& node) const
 
 bool Sweep::Legalize(SweepContext& tcx, Triangle& t)
 {
+  RecursionGuard guard(tcx);
+  if (guard.exceeded || tcx.HasFailed()) {
+    return false;
+  }
   // To legalize a triangle we start by finding if any of the three edges
   // violate the Delaunay condition
   for (int i = 0; i < 3; i++) {
@@ -557,6 +605,10 @@ void Sweep::FillBasin(SweepContext& tcx, Node& node)
 
 void Sweep::FillBasinReq(SweepContext& tcx, Node* node)
 {
+  RecursionGuard guard(tcx);
+  if (guard.exceeded || tcx.HasFailed()) {
+    return;
+  }
   // if shallow stop filling
   if (IsShallow(tcx, *node)) {
     return;
@@ -618,7 +670,7 @@ void Sweep::FillEdgeEvent(SweepContext& tcx, Edge* edge, Node* node)
 
 void Sweep::FillRightAboveEdgeEvent(SweepContext& tcx, Edge* edge, Node* node)
 {
-  while (node->next->point->x < edge->p->x) {
+  while (!tcx.HasFailed() && node->next->point->x < edge->p->x) {
     // Check if next node is below the edge
     if (Orient2d(*edge->q, *node->next->point, *edge->p) == CCW) {
       FillRightBelowEdgeEvent(tcx, edge, *node);
@@ -630,6 +682,10 @@ void Sweep::FillRightAboveEdgeEvent(SweepContext& tcx, Edge* edge, Node* node)
 
 void Sweep::FillRightBelowEdgeEvent(SweepContext& tcx, Edge* edge, Node& node)
 {
+  RecursionGuard guard(tcx);
+  if (guard.exceeded || tcx.HasFailed()) {
+    return;
+  }
   if (node.point->x < edge->p->x) {
     if (Orient2d(*node.point, *node.next->point, *node.next->next->point) == CCW) {
       // Concave
@@ -645,6 +701,10 @@ void Sweep::FillRightBelowEdgeEvent(SweepContext& tcx, Edge* edge, Node& node)
 
 void Sweep::FillRightConcaveEdgeEvent(SweepContext& tcx, Edge* edge, Node& node)
 {
+  RecursionGuard guard(tcx);
+  if (guard.exceeded || tcx.HasFailed()) {
+    return;
+  }
   Fill(tcx, *node.next);
   if (node.next->point != edge->p) {
     // Next above or below edge?
@@ -662,6 +722,10 @@ void Sweep::FillRightConcaveEdgeEvent(SweepContext& tcx, Edge* edge, Node& node)
 
 void Sweep::FillRightConvexEdgeEvent(SweepContext& tcx, Edge* edge, Node& node)
 {
+  RecursionGuard guard(tcx);
+  if (guard.exceeded || tcx.HasFailed()) {
+    return;
+  }
   // Next concave or convex?
   if (Orient2d(*node.next->point, *node.next->next->point, *node.next->next->next->point) == CCW) {
     // Concave
@@ -680,7 +744,7 @@ void Sweep::FillRightConvexEdgeEvent(SweepContext& tcx, Edge* edge, Node& node)
 
 void Sweep::FillLeftAboveEdgeEvent(SweepContext& tcx, Edge* edge, Node* node)
 {
-  while (node->prev->point->x > edge->p->x) {
+  while (!tcx.HasFailed() && node->prev->point->x > edge->p->x) {
     // Check if next node is below the edge
     if (Orient2d(*edge->q, *node->prev->point, *edge->p) == CW) {
       FillLeftBelowEdgeEvent(tcx, edge, *node);
@@ -692,6 +756,10 @@ void Sweep::FillLeftAboveEdgeEvent(SweepContext& tcx, Edge* edge, Node* node)
 
 void Sweep::FillLeftBelowEdgeEvent(SweepContext& tcx, Edge* edge, Node& node)
 {
+  RecursionGuard guard(tcx);
+  if (guard.exceeded || tcx.HasFailed()) {
+    return;
+  }
   if (node.point->x > edge->p->x) {
     if (Orient2d(*node.point, *node.prev->point, *node.prev->prev->point) == CW) {
       // Concave
@@ -707,6 +775,10 @@ void Sweep::FillLeftBelowEdgeEvent(SweepContext& tcx, Edge* edge, Node& node)
 
 void Sweep::FillLeftConvexEdgeEvent(SweepContext& tcx, Edge* edge, Node& node)
 {
+  RecursionGuard guard(tcx);
+  if (guard.exceeded || tcx.HasFailed()) {
+    return;
+  }
   // Next concave or convex?
   if (Orient2d(*node.prev->point, *node.prev->prev->point, *node.prev->prev->prev->point) == CW) {
     // Concave
@@ -725,6 +797,10 @@ void Sweep::FillLeftConvexEdgeEvent(SweepContext& tcx, Edge* edge, Node& node)
 
 void Sweep::FillLeftConcaveEdgeEvent(SweepContext& tcx, Edge* edge, Node& node)
 {
+  RecursionGuard guard(tcx);
+  if (guard.exceeded || tcx.HasFailed()) {
+    return;
+  }
   Fill(tcx, *node.prev);
   if (node.prev->point != edge->p) {
     // Next above or below edge?
@@ -742,14 +818,27 @@ void Sweep::FillLeftConcaveEdgeEvent(SweepContext& tcx, Edge* edge, Node& node)
 
 void Sweep::FlipEdgeEvent(SweepContext& tcx, Point& ep, Point& eq, Triangle* t, Point& p)
 {
-  assert(t);
+  RecursionGuard guard(tcx);
+  if (guard.exceeded || tcx.HasFailed()) {
+    return;
+  }
+  if (t == nullptr) {
+    tcx.SetFailed();
+    return;
+  }
   Triangle* ot_ptr = t->NeighborAcross(p);
   if (ot_ptr == nullptr)
   {
-    std::abort();
+    tcx.SetFailed();
+    return;
   }
   Triangle& ot = *ot_ptr;
-  Point& op = *ot.OppositePoint(*t, p);
+  Point* op_ptr = ot.OppositePoint(*t, p);
+  if (op_ptr == nullptr) {
+    tcx.SetFailed();
+    return;
+  }
+  Point& op = *op_ptr;
 
   if (InScanArea(p, *t->PointCCW(p), *t->PointCW(p), op)) {
     // Lets rotate shared edge one vertex CW
@@ -772,7 +861,10 @@ void Sweep::FlipEdgeEvent(SweepContext& tcx, Point& ep, Point& eq, Triangle* t, 
       FlipEdgeEvent(tcx, ep, eq, t, p);
     }
   } else {
-    Point& newP = NextFlipPoint(ep, eq, ot, op);
+    Point& newP = NextFlipPoint(tcx, ep, eq, ot, op);
+    if (tcx.HasFailed()) {
+      return;
+    }
     FlipScanEdgeEvent(tcx, ep, eq, *t, ot, newP);
     EdgeEvent(tcx, ep, eq, t, p);
   }
@@ -798,7 +890,7 @@ Triangle& Sweep::NextFlipTriangle(SweepContext& tcx, int o, Triangle& t, Triangl
   return ot;
 }
 
-Point& Sweep::NextFlipPoint(Point& ep, Point& eq, Triangle& ot, Point& op)
+Point& Sweep::NextFlipPoint(SweepContext& tcx, Point& ep, Point& eq, Triangle& ot, Point& op)
 {
   Orientation o2d = Orient2d(eq, op, ep);
   if (o2d == CW) {
@@ -808,26 +900,35 @@ Point& Sweep::NextFlipPoint(Point& ep, Point& eq, Triangle& ot, Point& op)
     // Left
     return *ot.PointCW(op);
   }
-  std::abort();
+  tcx.SetFailed();
+  return eq;
 }
 
 void Sweep::FlipScanEdgeEvent(SweepContext& tcx, Point& ep, Point& eq, Triangle& flip_triangle,
                               Triangle& t, Point& p)
 {
+  RecursionGuard guard(tcx);
+  if (guard.exceeded || tcx.HasFailed()) {
+    return;
+  }
+
   Triangle* ot_ptr = t.NeighborAcross(p);
   if (ot_ptr == nullptr) {
-    std::abort();
+    tcx.SetFailed();
+    return;
   }
 
   Point* op_ptr = ot_ptr->OppositePoint(t, p);
   if (op_ptr == nullptr) {
-    std::abort();
+    tcx.SetFailed();
+    return;
   }
 
   Point* p1 = flip_triangle.PointCCW(eq);
   Point* p2 = flip_triangle.PointCW(eq);
   if (p1 == nullptr || p2 == nullptr) {
-    std::abort();
+    tcx.SetFailed();
+    return;
   }
 
   Triangle& ot = *ot_ptr;
@@ -844,7 +945,10 @@ void Sweep::FlipScanEdgeEvent(SweepContext& tcx, Point& ep, Point& eq, Triangle&
     // Turns out at first glance that this is somewhat complicated
     // so it will have to wait.
   } else {
-    Point& newP = NextFlipPoint(ep, eq, ot, op);
+    Point& newP = NextFlipPoint(tcx, ep, eq, ot, op);
+    if (tcx.HasFailed()) {
+      return;
+    }
     FlipScanEdgeEvent(tcx, ep, eq, flip_triangle, ot, newP);
   }
 }

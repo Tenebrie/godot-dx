@@ -636,6 +636,12 @@ void GameView::_editor_or_project_settings_changed() {
 		return;
 	}
 
+	if (EditorSettings::get_singleton()->check_changed_settings_in_group("run/window_placement")) {
+		floating_window_rect = Rect2i();
+		floating_window_screen = -1;
+		floating_window_maximized = false;
+	}
+
 	// Update the window size and aspect ratio.
 	_update_embed_window_size();
 
@@ -1219,22 +1225,6 @@ void GameView::_notification(int p_what) {
 	}
 }
 
-void GameView::set_window_layout(Ref<ConfigFile> p_layout) {
-	floating_window_rect = p_layout->get_value("GameView", "floating_window_rect", Rect2i());
-	floating_window_screen = p_layout->get_value("GameView", "floating_window_screen", -1);
-	floating_window_maximized = p_layout->get_value("GameView", "floating_window_maximized", false);
-}
-
-void GameView::get_window_layout(Ref<ConfigFile> p_layout) {
-	if (window_wrapper->get_window_enabled()) {
-		_update_floating_window_settings();
-	}
-
-	p_layout->set_value("GameView", "floating_window_rect", floating_window_rect);
-	p_layout->set_value("GameView", "floating_window_screen", floating_window_screen);
-	p_layout->set_value("GameView", "floating_window_maximized", floating_window_maximized);
-}
-
 void GameView::_update_floating_window_settings() {
 	if (window_wrapper->get_window_enabled()) {
 		floating_window_maximized = window_wrapper->is_window_maximized();
@@ -1720,14 +1710,6 @@ void GameViewPluginBase::make_visible(bool p_visible) {
 	} else {
 		window_wrapper->hide();
 	}
-}
-
-void GameViewPluginBase::set_window_layout(Ref<ConfigFile> p_layout) {
-	game_view->set_window_layout(p_layout);
-}
-
-void GameViewPluginBase::get_window_layout(Ref<ConfigFile> p_layout) {
-	game_view->get_window_layout(p_layout);
 }
 
 void GameViewPluginBase::setup(Ref<GameViewDebugger> p_debugger, EmbeddedProcessBase *p_embedded_process) {

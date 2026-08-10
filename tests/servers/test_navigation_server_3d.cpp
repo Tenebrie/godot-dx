@@ -848,6 +848,143 @@ TEST_SUITE("[Navigation3D]") {
 		Vector<Vector3> simplified_path = NavigationServer3D::get_singleton()->simplify_path(source_path, simplify_epsilon);
 		CHECK_EQ(simplified_path.size(), 4);
 	}
+
+	// Flat baking pipes Clipper2 output into poly2tri, which requires simple rings with
+	// non-repeating points. Clipper2 legally emits self-touching ("pinched") rings whenever
+	// obstructions meet each other or the walkable boundary at exactly one point, so the baker
+	// must survive every such shape instead of crashing the process.
+	TEST_CASE("[NavigationServer3D] Flat baking should survive degenerate walkable geometry") {
+		NavigationServer3D *navigation_server = NavigationServer3D::get_singleton();
+
+		auto make_flat_navigation_mesh = []() -> Ref<NavigationMesh> {
+			Ref<NavigationMesh> navigation_mesh = memnew(NavigationMesh);
+			navigation_mesh->set_baking_flat_enabled(true);
+			navigation_mesh->set_baking_flat_plane(Plane(0, 1, 0, 0));
+			navigation_mesh->set_baking_flat_triangulation_algorithm(NavigationMesh::FLAT_TRIANGULATION_CDT);
+			navigation_mesh->set_agent_radius(0.0);
+			return navigation_mesh;
+		};
+
+		PackedVector3Array floor_faces = {
+			Vector3(-5, 0, -5), Vector3(-5, 0, 5), Vector3(5, 0, 5),
+			Vector3(-5, 0, -5), Vector3(5, 0, 5), Vector3(5, 0, -5)
+		};
+
+		auto bake_with_obstructions = [&](const Vector<Vector<Vector3>> &p_obstructions) -> Ref<NavigationMesh> {
+			Ref<NavigationMesh> navigation_mesh = make_flat_navigation_mesh();
+			Ref<NavigationMeshSourceGeometryData3D> source_geometry = memnew(NavigationMeshSourceGeometryData3D);
+			source_geometry->add_faces(floor_faces, Transform3D());
+			for (const Vector<Vector3> &obstruction : p_obstructions) {
+				source_geometry->add_projected_obstruction(obstruction, 0.0, 1.0, true);
+			}
+			navigation_server->bake_from_source_geometry_data(navigation_mesh, source_geometry, Callable());
+			return navigation_mesh;
+		};
+
+		// The summed triangle area must match the analytic walkable area: too little means an
+		// island was dropped, too much means a hole interior was triangulated as walkable.
+		auto baked_area = [](const Ref<NavigationMesh> &p_navigation_mesh) -> double {
+			const Vector<Vector3> vertices = p_navigation_mesh->get_vertices();
+			double area = 0.0;
+			for (int i = 0; i < p_navigation_mesh->get_polygon_count(); i++) {
+				const Vector<int> polygon = p_navigation_mesh->get_polygon(i);
+				for (int j = 1; j + 1 < polygon.size(); j++) {
+					area += 0.5 * (vertices[polygon[j]] - vertices[polygon[0]]).cross(vertices[polygon[j + 1]] - vertices[polygon[0]]).length();
+				}
+			}
+			return area;
+		};
+
+		SUBCASE("Baseline: single interior obstruction") {
+			Ref<NavigationMesh> navigation_mesh = bake_with_obstructions({ { Vector3(-1, 0, -1), Vector3(1, 0, -1), Vector3(1, 0, 1), Vector3(-1, 0, 1) } });
+			CHECK_GT(navigation_mesh->get_polygon_count(), 0);
+			CHECK_LT(Math::abs(baked_area(navigation_mesh) - 96.0), 0.1);
+		}
+
+		SUBCASE("Walkable area pinched to single points between obstructions and the boundary") {
+			// Two diamonds spanning from the floor edges to the center, touching each other and
+			// the boundary at exactly one point each. The walkable remainder is two side regions
+			// connected only through those points, which Clipper2 emits as a self-touching ring.
+			Ref<NavigationMesh> navigation_mesh = bake_with_obstructions({
+					{ Vector3(0, 0, -5), Vector3(2.5, 0, -2.5), Vector3(0, 0, 0), Vector3(-2.5, 0, -2.5) },
+					{ Vector3(0, 0, 0), Vector3(2.5, 0, 2.5), Vector3(0, 0, 5), Vector3(-2.5, 0, 2.5) } });
+			CHECK_GT(navigation_mesh->get_polygon_count(), 0);
+		}
+
+		SUBCASE("Interior obstructions touching at a single point form a pinched hole") {
+			Ref<NavigationMesh> navigation_mesh = bake_with_obstructions({
+					{ Vector3(-3, 0, 0), Vector3(-1.5, 0, 1.5), Vector3(0, 0, 0), Vector3(-1.5, 0, -1.5) },
+					{ Vector3(0, 0, 0), Vector3(1.5, 0, 1.5), Vector3(3, 0, 0), Vector3(1.5, 0, -1.5) } });
+			CHECK_GT(navigation_mesh->get_polygon_count(), 0);
+		}
+
+		SUBCASE("Obstruction with consecutive duplicate vertices") {
+			Ref<NavigationMesh> navigation_mesh = bake_with_obstructions({
+					{ Vector3(-1, 0, -1), Vector3(-1, 0, -1), Vector3(1, 0, -1), Vector3(1, 0, 1), Vector3(1, 0, 1), Vector3(-1, 0, 1) } });
+			CHECK_GT(navigation_mesh->get_polygon_count(), 0);
+		}
+
+		SUBCASE("Obstruction collapsed to a zero-area line") {
+			Ref<NavigationMesh> navigation_mesh = bake_with_obstructions({ { Vector3(-1, 0, 0), Vector3(1, 0, 0), Vector3(-1, 0, 0) } });
+			CHECK_GT(navigation_mesh->get_polygon_count(), 0);
+		}
+
+		SUBCASE("Obstruction touching the boundary along a shared edge segment") {
+			Ref<NavigationMesh> navigation_mesh = bake_with_obstructions({ { Vector3(-1, 0, -5), Vector3(1, 0, -5), Vector3(1, 0, -3), Vector3(-1, 0, -3) } });
+			CHECK_GT(navigation_mesh->get_polygon_count(), 0);
+		}
+
+		SUBCASE("Agent radius erosion pinching a diagonal gap shut at exactly one point") {
+			// Two boxes leave a diagonal gap between their corners at (0,0) and (1,1). Eroding by
+			// agent radius 0.5 moves both miter corners exactly onto (0.5, 0.5), so InflatePaths
+			// emits the two remaining walkable regions as one self-touching ring.
+			Ref<NavigationMesh> navigation_mesh = make_flat_navigation_mesh();
+			navigation_mesh->set_agent_radius(0.5);
+			Ref<NavigationMeshSourceGeometryData3D> source_geometry = memnew(NavigationMeshSourceGeometryData3D);
+			source_geometry->add_faces(floor_faces, Transform3D());
+			source_geometry->add_projected_obstruction({ Vector3(-4, 0, -4), Vector3(0, 0, -4), Vector3(0, 0, 0), Vector3(-4, 0, 0) }, 0.0, 1.0, false);
+			source_geometry->add_projected_obstruction({ Vector3(1, 0, 1), Vector3(4, 0, 1), Vector3(4, 0, 4), Vector3(1, 0, 4) }, 0.0, 1.0, false);
+			navigation_server->bake_from_source_geometry_data(navigation_mesh, source_geometry, Callable());
+			CHECK_GT(navigation_mesh->get_polygon_count(), 0);
+			CHECK_LT(Math::abs(baked_area(navigation_mesh) - 40.0), 0.1);
+		}
+
+		SUBCASE("Carved hole tangent to the eroded boundary at exactly one vertex") {
+			// Erosion by 0.5 puts the walkable boundary at z = 4.5; the carved diamond's tip sits
+			// exactly on it, so the hole and the outer ring share one coordinate-identical vertex.
+			Ref<NavigationMesh> navigation_mesh = make_flat_navigation_mesh();
+			navigation_mesh->set_agent_radius(0.5);
+			Ref<NavigationMeshSourceGeometryData3D> source_geometry = memnew(NavigationMeshSourceGeometryData3D);
+			source_geometry->add_faces(floor_faces, Transform3D());
+			source_geometry->add_projected_obstruction({ Vector3(0, 0, 4.5), Vector3(1, 0, 3.5), Vector3(0, 0, 2.5), Vector3(-1, 0, 3.5) }, 0.0, 1.0, true);
+			navigation_server->bake_from_source_geometry_data(navigation_mesh, source_geometry, Callable());
+			CHECK_GT(navigation_mesh->get_polygon_count(), 0);
+			CHECK_LT(Math::abs(baked_area(navigation_mesh) - 79.0), 0.1);
+		}
+
+		SUBCASE("Two carved holes sharing a single vertex") {
+			Ref<NavigationMesh> navigation_mesh = bake_with_obstructions({
+					{ Vector3(-2, 0, 0), Vector3(-1, 0, 1), Vector3(0, 0, 0), Vector3(-1, 0, -1) },
+					{ Vector3(0, 0, 0), Vector3(1, 0, 1), Vector3(2, 0, 0), Vector3(1, 0, -1) } });
+			CHECK_GT(navigation_mesh->get_polygon_count(), 0);
+			CHECK_LT(Math::abs(baked_area(navigation_mesh) - 96.0), 0.1);
+		}
+
+		SUBCASE("Wall tiled from collinear segments triangulates like a single box") {
+			// The union of the tiles keeps a boundary vertex at every seam; unless those collinear
+			// vertices are dropped before triangulation, the CDT fans a sliver triangle from every
+			// seam vertex across the open floor.
+			Vector<Vector<Vector3>> segments;
+			for (int i = 0; i < 10; i++) {
+				const real_t x = -2.5f + i * 0.5f;
+				segments.push_back({ Vector3(x, 0, 0), Vector3(x + 0.5f, 0, 0), Vector3(x + 0.5f, 0, 0.5), Vector3(x, 0, 0.5) });
+			}
+			Ref<NavigationMesh> navigation_mesh = bake_with_obstructions(segments);
+			CHECK_GT(navigation_mesh->get_polygon_count(), 0);
+			CHECK_LT(Math::abs(baked_area(navigation_mesh) - 97.5), 0.1);
+			CHECK_LE(navigation_mesh->get_vertices().size(), 12);
+		}
+	}
 }
 
 } // namespace TestNavigationServer3D

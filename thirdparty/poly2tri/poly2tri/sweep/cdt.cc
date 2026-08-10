@@ -52,6 +52,11 @@ void CDT::Triangulate()
   sweep_->Triangulate(*sweep_context_);
 }
 
+bool CDT::HasFailed() const
+{
+  return sweep_context_->HasFailed();
+}
+
 std::vector<p2t::Triangle*> CDT::GetTriangles()
 {
   return sweep_context_->GetTriangles();

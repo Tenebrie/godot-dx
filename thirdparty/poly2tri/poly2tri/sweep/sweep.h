@@ -257,7 +257,7 @@ private:
      * @param op
      * @return
      */
-  Point& NextFlipPoint(Point& ep, Point& eq, Triangle& ot, Point& op);
+  Point& NextFlipPoint(SweepContext& tcx, Point& ep, Point& eq, Triangle& ot, Point& op);
 
    /**
      * Scan part of the FlipScan algorithm<br>

@@ -281,8 +281,6 @@ public:
 	void set_state(const Dictionary &p_state);
 	Dictionary get_state() const;
 
-	void set_window_layout(Ref<ConfigFile> p_layout);
-	void get_window_layout(Ref<ConfigFile> p_layout);
 
 	GameView(Ref<GameViewDebugger> p_debugger, EmbeddedProcessBase *p_embedded_process, WindowWrapper *p_wrapper);
 };
@@ -324,8 +322,6 @@ public:
 #ifndef ANDROID_ENABLED
 	virtual void make_visible(bool p_visible) override;
 
-	virtual void set_window_layout(Ref<ConfigFile> p_layout) override;
-	virtual void get_window_layout(Ref<ConfigFile> p_layout) override;
 #endif // ANDROID_ENABLED
 	GameViewPluginBase();
 };
