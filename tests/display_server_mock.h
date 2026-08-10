@@ -45,6 +45,10 @@ private:
 	bool window_over = false;
 	Callable event_callback;
 
+	DisplayServerEnums::WindowMode window_mode = DisplayServerEnums::WINDOW_MODE_WINDOWED;
+	Size2i window_size = Size2i(1920, 1080);
+	int window_set_size_count = 0;
+
 	String clipboard_text;
 	String primary_clipboard_text;
 
@@ -79,7 +83,24 @@ public:
 	virtual String clipboard_get_primary() const override { return primary_clipboard_text; }
 
 	virtual Size2i window_get_size(DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) const override {
-		return Size2i(1920, 1080);
+		return window_size;
+	}
+
+	virtual void window_set_size(const Size2i p_size, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override {
+		window_size = p_size;
+		window_set_size_count++;
+	}
+
+	virtual void window_set_mode(DisplayServerEnums::WindowMode p_mode, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override {
+		window_mode = p_mode;
+	}
+
+	virtual DisplayServerEnums::WindowMode window_get_mode(DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) const override {
+		return window_mode;
+	}
+
+	int get_window_set_size_count() const {
+		return window_set_size_count;
 	}
 
 	virtual void cursor_set_shape(DisplayServerEnums::CursorShape p_shape) override {

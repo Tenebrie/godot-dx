@@ -171,6 +171,7 @@ class GameView : public VBoxContainer {
 
 	Rect2i floating_window_rect;
 	int floating_window_screen = -1;
+	bool floating_window_maximized = false;
 
 	bool debug_mute_audio = false;
 
@@ -250,8 +251,8 @@ class GameView : public VBoxContainer {
 	void _update_embed_menu_options();
 	void _update_game_window_size_label();
 	void _update_embed_window_size();
-	void _update_arguments_for_instance(int p_idx, List<String> &r_arguments);
-	void _show_update_window_wrapper();
+	void _update_arguments_for_instance(int p_idx, List<String> &r_arguments, const Rect2i &p_embed_rect);
+	Rect2i _show_update_window_wrapper();
 
 	void _hide_selection_toggled(bool p_pressed);
 

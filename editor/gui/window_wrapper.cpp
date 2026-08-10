@@ -193,6 +193,16 @@ int WindowWrapper::get_window_screen() const {
 	return window->get_current_screen();
 }
 
+bool WindowWrapper::is_window_maximized() const {
+	ERR_FAIL_COND_V(!get_window_enabled(), false);
+	return window->get_mode() == Window::MODE_MAXIMIZED;
+}
+
+void WindowWrapper::set_window_maximized(bool p_maximized) {
+	ERR_FAIL_COND(!is_window_available());
+	window->set_mode(p_maximized ? Window::MODE_MAXIMIZED : Window::MODE_WINDOWED);
+}
+
 void WindowWrapper::restore_window(const Rect2i &p_rect, int p_screen) {
 	ERR_FAIL_COND(!is_window_available());
 	ERR_FAIL_INDEX(p_screen, DisplayServer::get_singleton()->get_screen_count());

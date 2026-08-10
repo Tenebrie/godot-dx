@@ -43,6 +43,7 @@
 #include "editor/editor_string_names.h"
 #include "editor/gui/editor_bottom_panel.h"
 #include "editor/gui/window_wrapper.h"
+#include "editor/run/game_window_geometry.h"
 #include "editor/run/editor_run_bar.h"
 #include "editor/run/embedded_process.h"
 #include "editor/run/run_instances_dialog.h"
@@ -473,20 +474,21 @@ void GameView::_instance_starting(int p_idx, List<String> &r_arguments) {
 		return;
 	}
 
+	Rect2i embed_rect;
 	if (p_idx == 0 && embed_on_play && make_floating_on_play && window_wrapper->is_window_available() && !window_wrapper->get_window_enabled() && _get_embed_available() == EMBED_AVAILABLE) {
 		// Set the Floating Window default title. Always considered in DEBUG mode, same as in Window::set_title.
 		String appname = GLOBAL_GET("application/config/name");
 		appname = vformat("%s (DEBUG)", TranslationServer::get_singleton()->translate(appname));
 		window_wrapper->set_window_title(appname);
 
-		_show_update_window_wrapper();
+		embed_rect = _show_update_window_wrapper();
 
 		if (embedded_process->get_focus_mode_with_override() != FOCUS_NONE) {
 			embedded_process->grab_focus();
 		}
 	}
 
-	_update_arguments_for_instance(p_idx, r_arguments);
+	_update_arguments_for_instance(p_idx, r_arguments, embed_rect);
 }
 
 bool GameView::_instance_rq_screenshot_static(const Callable &p_callback) {
@@ -506,11 +508,8 @@ bool GameView::_instance_rq_screenshot(const Callable &p_callback) {
 	return debugger->add_screenshot_callback(p_callback, r);
 }
 
-void GameView::_show_update_window_wrapper() {
+Rect2i GameView::_show_update_window_wrapper() {
 	EditorRun::WindowPlacement placement = EditorRun::get_window_placement();
-	Point2 position = floating_window_rect.position;
-	Size2i size = floating_window_rect.size;
-	int screen = floating_window_screen;
 
 	// Obtain the size around the embedded process control. Usually, the difference between the game view's get_size
 	// and the embedded control should work. However, when the control is hidden and has never been displayed,
@@ -536,14 +535,22 @@ void GameView::_show_update_window_wrapper() {
 
 	Point2 size_diff_embedded_process = Point2(0, embedded_process_min_size.y) + embedded_process->get_margins_size();
 
-	if (placement.position != Point2i(INT_MAX, INT_MAX)) {
-		position = placement.position - offset_embedded_process;
-		screen = placement.screen;
+	Rect2i usable_screen_rect;
+	if (floating_window_maximized) {
+		int usable_screen = floating_window_screen;
+		if (usable_screen < 0 || usable_screen >= DisplayServer::get_singleton()->get_screen_count()) {
+			usable_screen = get_window()->get_current_screen();
+		}
+		usable_screen_rect = DisplayServer::get_singleton()->screen_get_usable_rect(usable_screen);
 	}
-	if (placement.size != Size2i()) {
-		size = placement.size + size_diff_embedded_process + wrapped_margins_size;
-	}
-	window_wrapper->restore_window_from_saved_position(Rect2(position, size), screen, Rect2i());
+
+	GameWindowGeometry geometry = GameWindowGeometry::compute(floating_window_rect, floating_window_screen, floating_window_maximized, placement.position, placement.screen, placement.size, offset_embedded_process, size_diff_embedded_process, wrapped_margins_size, usable_screen_rect);
+
+	// `_NET_WM_STATE` can only be set directly while the window is unmapped, so the mode
+	// must be applied before the restore shows the window.
+	window_wrapper->set_window_maximized(floating_window_maximized);
+	window_wrapper->restore_window_from_saved_position(geometry.window_rect, geometry.screen, Rect2i());
+	return geometry.embed_rect;
 }
 
 void GameView::_play_pressed() {
@@ -1215,6 +1222,7 @@ void GameView::_notification(int p_what) {
 void GameView::set_window_layout(Ref<ConfigFile> p_layout) {
 	floating_window_rect = p_layout->get_value("GameView", "floating_window_rect", Rect2i());
 	floating_window_screen = p_layout->get_value("GameView", "floating_window_screen", -1);
+	floating_window_maximized = p_layout->get_value("GameView", "floating_window_maximized", false);
 }
 
 void GameView::get_window_layout(Ref<ConfigFile> p_layout) {
@@ -1224,11 +1232,15 @@ void GameView::get_window_layout(Ref<ConfigFile> p_layout) {
 
 	p_layout->set_value("GameView", "floating_window_rect", floating_window_rect);
 	p_layout->set_value("GameView", "floating_window_screen", floating_window_screen);
+	p_layout->set_value("GameView", "floating_window_maximized", floating_window_maximized);
 }
 
 void GameView::_update_floating_window_settings() {
 	if (window_wrapper->get_window_enabled()) {
-		floating_window_rect = window_wrapper->get_window_rect();
+		floating_window_maximized = window_wrapper->is_window_maximized();
+		if (!floating_window_maximized) {
+			floating_window_rect = window_wrapper->get_window_rect();
+		}
 		floating_window_screen = window_wrapper->get_window_screen();
 	}
 }
@@ -1268,7 +1280,7 @@ void GameView::_remote_window_title_changed(String title) {
 	window_wrapper->set_window_title(title);
 }
 
-void GameView::_update_arguments_for_instance(int p_idx, List<String> &r_arguments) {
+void GameView::_update_arguments_for_instance(int p_idx, List<String> &r_arguments, const Rect2i &p_embed_rect) {
 	if (p_idx != 0 || !embed_on_play || _get_embed_available() != EMBED_AVAILABLE) {
 		return;
 	}
@@ -1360,17 +1372,10 @@ void GameView::_update_arguments_for_instance(int p_idx, List<String> &r_argumen
 		embedded_process->set_custom_minimum_size(old_min_size);
 	}
 
-	// When using the floating window, we need to force the position and size from the
-	// editor/project settings, because the get_screen_embedded_window_rect of the
-	// embedded_process will be updated only on the next frame.
-	if (window_wrapper->get_window_enabled()) {
-		EditorRun::WindowPlacement placement = EditorRun::get_window_placement();
-		if (placement.position != Point2i(INT_MAX, INT_MAX)) {
-			rect.position = placement.position;
-		}
-		if (placement.size != Size2i()) {
-			rect.size = placement.size;
-		}
+	// When the floating window was just opened, the get_screen_embedded_window_rect of the
+	// embedded_process will be updated only on the next frame, so use the rect it was restored to.
+	if (window_wrapper->get_window_enabled() && p_embed_rect != Rect2i()) {
+		rect = p_embed_rect;
 	}
 
 	N = r_arguments.insert_after(N, "--position");

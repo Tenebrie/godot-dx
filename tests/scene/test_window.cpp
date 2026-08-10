@@ -93,4 +93,26 @@ TEST_CASE("[SceneTree][Window]") {
 	}
 }
 
+TEST_CASE("[SceneTree][Window] Size limit update does not resize a maximized or fullscreen window") {
+	DisplayServerMock *DS = (DisplayServerMock *)DisplayServer::get_singleton();
+	Window *root = SceneTree::get_singleton()->get_root();
+
+	const int count_windowed = DS->get_window_set_size_count();
+	root->set_min_size(Size2i(100, 100));
+	CHECK(DS->get_window_set_size_count() == count_windowed + 1);
+
+	DS->window_set_mode(DisplayServerEnums::WINDOW_MODE_MAXIMIZED, DisplayServerEnums::MAIN_WINDOW_ID);
+	const int count_maximized = DS->get_window_set_size_count();
+	root->set_min_size(Size2i(120, 120));
+	CHECK(DS->get_window_set_size_count() == count_maximized);
+
+	DS->window_set_mode(DisplayServerEnums::WINDOW_MODE_FULLSCREEN, DisplayServerEnums::MAIN_WINDOW_ID);
+	root->set_min_size(Size2i(140, 140));
+	CHECK(DS->get_window_set_size_count() == count_maximized);
+
+	DS->window_set_mode(DisplayServerEnums::WINDOW_MODE_WINDOWED, DisplayServerEnums::MAIN_WINDOW_ID);
+	root->set_min_size(Size2i());
+	CHECK(DS->get_window_set_size_count() == count_maximized + 1);
+}
+
 } // namespace TestWindow

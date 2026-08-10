@@ -78,6 +78,8 @@ public:
 
 	Rect2i get_window_rect() const;
 	int get_window_screen() const;
+	bool is_window_maximized() const;
+	void set_window_maximized(bool p_maximized);
 
 	void restore_window(const Rect2i &p_rect, int p_screen = -1);
 	void restore_window_from_saved_position(const Rect2 p_window_rect, int p_screen, const Rect2 p_screen_rect);

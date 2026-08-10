@@ -1297,7 +1297,14 @@ void Window::_update_window_size() {
 
 			DisplayServer::get_singleton()->window_set_max_size(max_size_used, window_id);
 			DisplayServer::get_singleton()->window_set_min_size(size_limit, window_id);
-			DisplayServer::get_singleton()->window_set_size(size, window_id);
+
+			// Resizing a maximized or fullscreen window would make the window manager drop
+			// that state and apply the resize. Keep the state instead; the stored size
+			// applies when the window returns to windowed mode.
+			DisplayServerEnums::WindowMode current_mode = DisplayServer::get_singleton()->window_get_mode(window_id);
+			if (current_mode != DisplayServerEnums::WINDOW_MODE_MAXIMIZED && current_mode != DisplayServerEnums::WINDOW_MODE_FULLSCREEN && current_mode != DisplayServerEnums::WINDOW_MODE_EXCLUSIVE_FULLSCREEN) {
+				DisplayServer::get_singleton()->window_set_size(size, window_id);
+			}
 		} else if (Engine::get_singleton()->is_embedded_in_editor()) {
 			size = DisplayServer::get_singleton()->window_get_size(window_id); // Reset size.
 		}
