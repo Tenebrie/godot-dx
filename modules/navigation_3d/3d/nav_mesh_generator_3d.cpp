@@ -37,6 +37,7 @@
 #include "scene/resources/3d/navigation_mesh_source_geometry_data_3d.h"
 #include "scene/resources/navigation_mesh.h"
 
+#include <algorithm>
 #include <cmath>
 #include <map>
 #include <set>
@@ -376,8 +377,11 @@ static bool generator_flat_triangulate_island_earclip(
 		add_ring(*hole_ring, true);
 	}
 	TPPLPartition tpart;
-	if (tpart.Triangulate_EC(&tppl_in_polygon, &tppl_out_polygon) == 0) {
-		return false;
+	if (tpart.ConvexPartition_HM(&tppl_in_polygon, &tppl_out_polygon) == 0) {
+		tppl_out_polygon.clear();
+		if (tpart.Triangulate_EC(&tppl_in_polygon, &tppl_out_polygon) == 0) {
+			return false;
+		}
 	}
 	generator_flat_emit_tppl_triangles(tppl_out_polygon, r_nav_vertices, r_nav_polygons, r_point_to_index, p_plane_origin, p_basis_u, p_basis_v);
 	return true;
@@ -441,28 +445,6 @@ static void generator_flat_triangulate_outer(
 		return simple_rings;
 	};
 
-	// Slivers leaning on a long constrained edge cannot be repaired by interior points alone: any
-	// candidate next to the edge is rejected by the boundary clearance. Splitting long boundary
-	// edges beforehand bounds those slivers to roughly the subdivision length, which interior
-	// refinement can then work against.
-	auto subdivide_ring = [](const PathD &p_ring) -> PathD {
-		constexpr double max_boundary_edge_length = 1.0;
-		PathD result;
-		result.reserve(p_ring.size() * 2);
-		for (size_t i = 0; i < p_ring.size(); i++) {
-			const PointD &a = p_ring[i];
-			const PointD &b = p_ring[(i + 1) % p_ring.size()];
-			result.push_back(a);
-			const double length = std::hypot(b.x - a.x, b.y - a.y);
-			const int pieces = (int)std::ceil(length / max_boundary_edge_length);
-			for (int j = 1; j < pieces; j++) {
-				const double t = (double)j / pieces;
-				result.emplace_back(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
-			}
-		}
-		return result;
-	};
-
 	// Tangent holes can rest entirely on the sub-ring boundary, so scan for the first vertex with
 	// a decisive inside/outside answer and treat an all-boundary hole as belonging.
 	auto hole_belongs_to_ring = [](const PathD &p_hole_ring, const PathD &p_outer_ring) -> bool {
@@ -495,6 +477,28 @@ static void generator_flat_triangulate_outer(
 		route_simple_rings(split_ring_at_pinch_points(sanitize_ring(p_outer_node->Child(i)->Polygon())));
 	}
 
+	// Long boundary edges force the CDT into long thin triangles whose merges fail the convexity
+	// test at their tips, surviving as sliver cells. Subdividing boundary edges is purely a
+	// triangulation aid: the helper vertices are exactly collinear, so the post-merge pruning
+	// removes every one that ends up redundant in the final polygons.
+	auto subdivide_ring = [](const PathD &p_ring) -> PathD {
+		constexpr double max_boundary_edge_length = 2.0;
+		PathD result;
+		result.reserve(p_ring.size() * 2);
+		for (size_t i = 0; i < p_ring.size(); i++) {
+			const PointD &a = p_ring[i];
+			const PointD &b = p_ring[(i + 1) % p_ring.size()];
+			result.push_back(a);
+			const double length = std::hypot(b.x - a.x, b.y - a.y);
+			const int pieces = (int)Math::ceil(length / max_boundary_edge_length);
+			for (int j = 1; j < pieces; j++) {
+				const double t = (double)j / pieces;
+				result.emplace_back(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
+			}
+		}
+		return result;
+	};
+
 	for (const PathD &original_outer_ring : outer_rings) {
 		const PathD outer_ring = subdivide_ring(original_outer_ring);
 		std::vector<PathD> island_hole_rings;
@@ -509,156 +513,258 @@ static void generator_flat_triangulate_outer(
 			island_holes.push_back(&hole_ring);
 		}
 
-		// A constrained Delaunay triangulation is optimal for the vertices it is given but cannot
-		// add any: over a large open interior ringed by densely subdivided boundary (the arc
-		// corners the disc erosion produces), even the optimal triangulation degenerates into
-		// fans of meters-long slivers. Repair quality with Delaunay refinement: insert the
-		// centroid of every sliver as an interior Steiner point and re-triangulate until quality
-		// converges. A centroid of a triangulation triangle lies inside the island by
-		// construction; only candidates hugging the constrained boundary are rejected, since a
-		// point next to a constrained edge just breeds new slivers.
-		constexpr double sliver_edge_over_height_ratio = 5.0;
-		constexpr double sliver_minimum_edge_length = 0.75;
-		constexpr double refinement_boundary_clearance = 0.2;
-		constexpr int max_refinement_passes = 8;
+		// Own all p2t::Point allocations so poly2tri can hold raw pointers into them.
+		std::vector<p2t::Point *> owned_points;
 
-		auto boundary_distance_squared_of = [&outer_ring, &island_holes](const PointD &p_point) -> double {
-			double closest = 1e300;
-			auto scan_ring = [&closest, &p_point](const PathD &p_ring) {
-				for (size_t i = 0; i < p_ring.size(); i++) {
-					const PointD &a = p_ring[i];
-					const PointD &b = p_ring[(i + 1) % p_ring.size()];
-					const double abx = b.x - a.x;
-					const double aby = b.y - a.y;
-					const double length_squared = abx * abx + aby * aby;
-					const double t = length_squared > 0.0 ? CLAMP(((p_point.x - a.x) * abx + (p_point.y - a.y) * aby) / length_squared, 0.0, 1.0) : 0.0;
-					const double dx = p_point.x - (a.x + t * abx);
-					const double dy = p_point.y - (a.y + t * aby);
-					closest = MIN(closest, dx * dx + dy * dy);
-				}
-			};
-			scan_ring(outer_ring);
-			for (const PathD *hole_ring : island_holes) {
-				scan_ring(*hole_ring);
-			}
-			return closest;
-		};
-
-		std::set<std::pair<double, double>> used_coordinates;
-		for (const PointD &point : outer_ring) {
-			used_coordinates.insert({ point.x, point.y });
-		}
-		for (const PathD *hole_ring : island_holes) {
-			for (const PointD &point : *hole_ring) {
-				used_coordinates.insert({ point.x, point.y });
-			}
-		}
-
-		std::vector<PointD> refinement_points;
-		for (int pass = 0; pass <= max_refinement_passes; pass++) {
-			// Own all p2t::Point allocations so poly2tri can hold raw pointers into them.
-			std::vector<p2t::Point *> owned_points;
-
-			auto build_ring = [&owned_points](const PathD &p_ring, std::vector<p2t::Point *> &r_out) {
-				r_out.reserve(p_ring.size());
-				for (const PointD &point : p_ring) {
-					p2t::Point *p = new p2t::Point(point.x, point.y);
-					owned_points.push_back(p);
-					r_out.push_back(p);
-				}
-			};
-
-			std::vector<p2t::Point *> outer;
-			build_ring(outer_ring, outer);
-
-			p2t::CDT cdt(outer);
-			for (const PathD *hole_ring : island_holes) {
-				std::vector<p2t::Point *> hole;
-				build_ring(*hole_ring, hole);
-				cdt.AddHole(hole);
-			}
-			for (const PointD &point : refinement_points) {
+		auto build_ring = [&owned_points](const PathD &p_ring, std::vector<p2t::Point *> &r_out) {
+			r_out.reserve(p_ring.size());
+			for (const PointD &point : p_ring) {
 				p2t::Point *p = new p2t::Point(point.x, point.y);
 				owned_points.push_back(p);
-				cdt.AddPoint(p);
+				r_out.push_back(p);
 			}
+		};
 
-			cdt.Triangulate();
-			// An empty result for a >= 3 vertex ring means the sweep silently lost the interior
-			// on weakly-valid input, so treat it exactly like an explicit failure.
-			if (cdt.HasFailed() || cdt.GetTriangles().empty()) {
-				WARN_PRINT(vformat("NavigationMesh flat baking: CDT rejected island (outer %d pts, %d holes, %d refinement pts), falling back to ear clipping.", (int)outer_ring.size(), (int)island_holes.size(), (int)refinement_points.size()));
-				if (!generator_flat_triangulate_island_earclip(outer_ring, island_holes, r_nav_vertices, r_nav_polygons, r_point_to_index, p_plane_origin, p_basis_u, p_basis_v)) {
-					WARN_PRINT_ONCE("NavigationMesh flat baking: ear-clipping fallback also failed, skipping an island of walkable area.");
-				}
-				for (p2t::Point *p : owned_points) {
-					delete p;
-				}
-				break;
+		std::vector<p2t::Point *> outer;
+		build_ring(outer_ring, outer);
+
+		p2t::CDT cdt(outer);
+		for (const PathD *hole_ring : island_holes) {
+			std::vector<p2t::Point *> hole;
+			build_ring(*hole_ring, hole);
+			cdt.AddHole(hole);
+		}
+
+		cdt.Triangulate();
+		const std::vector<p2t::Triangle *> triangles = cdt.GetTriangles();
+		// An empty result for a >= 3 vertex ring means the sweep silently lost the interior on
+		// weakly-valid input, so treat it exactly like an explicit failure.
+		if (cdt.HasFailed() || triangles.empty()) {
+			WARN_PRINT(vformat("NavigationMesh flat baking: CDT rejected island (outer %d pts, %d holes), falling back to ear clipping.", (int)outer_ring.size(), (int)island_holes.size()));
+			if (!generator_flat_triangulate_island_earclip(outer_ring, island_holes, r_nav_vertices, r_nav_polygons, r_point_to_index, p_plane_origin, p_basis_u, p_basis_v)) {
+				WARN_PRINT_ONCE("NavigationMesh flat baking: ear-clipping fallback also failed, skipping an island of walkable area.");
 			}
-
-			const std::vector<p2t::Triangle *> triangles = cdt.GetTriangles();
-
-			bool inserted_any = false;
-			if (pass < max_refinement_passes) {
-				for (p2t::Triangle *tri : triangles) {
-					const p2t::Point *t0 = tri->GetPoint(0);
-					const p2t::Point *t1 = tri->GetPoint(1);
-					const p2t::Point *t2 = tri->GetPoint(2);
-					const double edge01 = Math::sqrt((t1->x - t0->x) * (t1->x - t0->x) + (t1->y - t0->y) * (t1->y - t0->y));
-					const double edge12 = Math::sqrt((t2->x - t1->x) * (t2->x - t1->x) + (t2->y - t1->y) * (t2->y - t1->y));
-					const double edge20 = Math::sqrt((t0->x - t2->x) * (t0->x - t2->x) + (t0->y - t2->y) * (t0->y - t2->y));
-					const double longest_edge = MAX(edge01, MAX(edge12, edge20));
-					if (longest_edge < sliver_minimum_edge_length) {
-						continue;
-					}
-					const double area = Math::abs((t1->x - t0->x) * (t2->y - t0->y) - (t2->x - t0->x) * (t1->y - t0->y)) * 0.5;
-					const double height = 2.0 * area / longest_edge;
-					if (longest_edge <= height * sliver_edge_over_height_ratio) {
-						continue;
-					}
-					const PointD centroid((t0->x + t1->x + t2->x) / 3.0, (t0->y + t1->y + t2->y) / 3.0);
-					const std::pair<double, double> key(centroid.x, centroid.y);
-					if (used_coordinates.count(key)) {
-						continue;
-					}
-					if (boundary_distance_squared_of(centroid) < refinement_boundary_clearance * refinement_boundary_clearance) {
-						continue;
-					}
-					used_coordinates.insert(key);
-					refinement_points.push_back(centroid);
-					inserted_any = true;
-				}
-			}
-
-			if (!inserted_any) {
-				for (p2t::Triangle *tri : triangles) {
-					Vector<int> nav_polygon;
-					nav_polygon.resize(3);
-					for (int i = 0; i < 3; i++) {
-						const p2t::Point *pt = tri->GetPoint(i);
-						const Vector3 world_vertex = p_plane_origin + p_basis_u * (real_t)pt->x + p_basis_v * (real_t)pt->y;
-						HashMap<Vector3, int>::Iterator E = r_point_to_index.find(world_vertex);
-						if (!E) {
-							E = r_point_to_index.insert(world_vertex, r_nav_vertices.size());
-							r_nav_vertices.push_back(world_vertex);
-						}
-						// Reverse the winding: poly2tri emits CCW-in-(u,v) triangles, but Godot's navigation
-						// mesh expects the opposite winding so the polygons face along the plane normal
-						// (correct surface normal for the navigation map and backface-culled debug render).
-						nav_polygon.write[2 - i] = E->value;
-					}
-					r_nav_polygons.push_back(nav_polygon);
-				}
-				for (p2t::Point *p : owned_points) {
-					delete p;
-				}
-				break;
-			}
-
 			for (p2t::Point *p : owned_points) {
 				delete p;
 			}
+			continue;
+		}
+
+		// A path query is only as straight as the polygons it crosses are fat: corridor A* over a
+		// fine triangulation picks corridors that rarely contain the straight line, so the funnel
+		// yields zigzags between triangle vertices. Navigation wants the fewest, fattest convex
+		// cells, not quality triangles — merge the triangulation with Hertel-Mehlhorn: drop every
+		// inessential diagonal whose removal keeps both of its endpoints convex.
+		std::map<const p2t::Point *, int> point_ids;
+		std::vector<PointD> local_points;
+		std::vector<std::vector<int>> polygon_loops;
+		polygon_loops.reserve(triangles.size());
+		for (p2t::Triangle *tri : triangles) {
+			std::vector<int> loop(3);
+			for (int i = 0; i < 3; i++) {
+				const p2t::Point *pt = tri->GetPoint(i);
+				auto found = point_ids.find(pt);
+				if (found == point_ids.end()) {
+					found = point_ids.insert({ pt, (int)local_points.size() }).first;
+					local_points.emplace_back(pt->x, pt->y);
+				}
+				loop[i] = found->second;
+			}
+			polygon_loops.push_back(std::move(loop));
+		}
+
+		auto convex_at = [&local_points](int p_previous, int p_current, int p_next) -> bool {
+			const PointD &a = local_points[p_previous];
+			const PointD &b = local_points[p_current];
+			const PointD &c = local_points[p_next];
+			return (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x) >= -1e-9;
+		};
+
+		std::vector<int> merge_roots(polygon_loops.size());
+		for (size_t i = 0; i < merge_roots.size(); i++) {
+			merge_roots[i] = (int)i;
+		}
+		auto root_of = [&merge_roots](int p_id) -> int {
+			while (merge_roots[p_id] != p_id) {
+				merge_roots[p_id] = merge_roots[merge_roots[p_id]];
+				p_id = merge_roots[p_id];
+			}
+			return p_id;
+		};
+
+		std::map<std::pair<int, int>, std::vector<int>> edge_owners;
+		for (size_t poly_id = 0; poly_id < polygon_loops.size(); poly_id++) {
+			const std::vector<int> &loop = polygon_loops[poly_id];
+			for (size_t i = 0; i < loop.size(); i++) {
+				const int a = loop[i];
+				const int b = loop[(i + 1) % loop.size()];
+				edge_owners[{ MIN(a, b), MAX(a, b) }].push_back((int)poly_id);
+			}
+		}
+
+		// Greedy merge order matters for how fat the final cells get: removing the longest
+		// diagonals first grows large cells before short diagonals lock their neighborhoods.
+		std::vector<const std::pair<const std::pair<int, int>, std::vector<int>> *> merge_candidates;
+		for (const auto &entry : edge_owners) {
+			if (entry.second.size() == 2) {
+				merge_candidates.push_back(&entry);
+			}
+		}
+		std::sort(merge_candidates.begin(), merge_candidates.end(), [&local_points](const auto *p_a, const auto *p_b) {
+			const PointD &a1 = local_points[p_a->first.first];
+			const PointD &a2 = local_points[p_a->first.second];
+			const PointD &b1 = local_points[p_b->first.first];
+			const PointD &b2 = local_points[p_b->first.second];
+			const double length_a = (a2.x - a1.x) * (a2.x - a1.x) + (a2.y - a1.y) * (a2.y - a1.y);
+			const double length_b = (b2.x - b1.x) * (b2.x - b1.x) + (b2.y - b1.y) * (b2.y - b1.y);
+			return length_a > length_b;
+		});
+
+		for (const auto *candidate : merge_candidates) {
+			const auto &[edge, owners] = *candidate;
+			const int root_a = root_of(owners[0]);
+			const int root_b = root_of(owners[1]);
+			if (root_a == root_b) {
+				continue;
+			}
+			std::vector<int> &loop_a = polygon_loops[root_a];
+			std::vector<int> &loop_b = polygon_loops[root_b];
+
+			int position_a = -1;
+			for (size_t i = 0; i < loop_a.size(); i++) {
+				const int a = loop_a[i];
+				const int b = loop_a[(i + 1) % loop_a.size()];
+				if ((a == edge.first && b == edge.second) || (a == edge.second && b == edge.first)) {
+					position_a = (int)i;
+					break;
+				}
+			}
+			if (position_a == -1) {
+				continue;
+			}
+			const int u = loop_a[position_a];
+			const int v = loop_a[(position_a + 1) % loop_a.size()];
+			int position_b = -1;
+			for (size_t i = 0; i < loop_b.size(); i++) {
+				if (loop_b[i] == v && loop_b[(i + 1) % loop_b.size()] == u) {
+					position_b = (int)i;
+					break;
+				}
+			}
+			if (position_b == -1) {
+				continue;
+			}
+
+			// Merging polygons that touch anywhere besides this one edge would enclose a pocket or
+			// revisit a vertex, producing a self-touching boundary loop.
+			{
+				std::set<int> vertices_a(loop_a.begin(), loop_a.end());
+				int shared_vertices = 0;
+				for (int vertex : loop_b) {
+					if (vertices_a.count(vertex)) {
+						shared_vertices++;
+					}
+				}
+				if (shared_vertices != 2) {
+					continue;
+				}
+			}
+
+			std::vector<int> merged;
+			merged.reserve(loop_a.size() + loop_b.size() - 2);
+			for (int i = 0; i <= position_a; i++) {
+				merged.push_back(loop_a[i]);
+			}
+			for (size_t offset = 2; offset < loop_b.size(); offset++) {
+				merged.push_back(loop_b[(position_b + offset) % loop_b.size()]);
+			}
+			for (size_t i = position_a + 1; i < loop_a.size(); i++) {
+				merged.push_back(loop_a[i]);
+			}
+
+			const int merged_size = (int)merged.size();
+			const int u_index = position_a;
+			const int v_index = (position_a + (int)loop_b.size() - 1) % merged_size;
+			const bool convex_u = convex_at(merged[(u_index - 1 + merged_size) % merged_size], merged[u_index], merged[(u_index + 1) % merged_size]);
+			const bool convex_v = convex_at(merged[(v_index - 1 + merged_size) % merged_size], merged[v_index], merged[(v_index + 1) % merged_size]);
+			if (!convex_u || !convex_v) {
+				continue;
+			}
+
+			polygon_loops[root_a] = std::move(merged);
+			merge_roots[root_b] = root_a;
+		}
+
+		// Merging leaves collinear vertices on the seams, splitting what is geometrically one
+		// edge into several polygon connections; the corridor funnel then bends around them and
+		// paths across open ground stop being straight lines. A vertex is redundant when every
+		// polygon using it runs straight through it — removing it from all of them at once keeps
+		// the edges of neighboring polygons matched.
+		{
+			std::map<int, std::vector<int>> vertex_users;
+			for (size_t poly_id = 0; poly_id < polygon_loops.size(); poly_id++) {
+				if (root_of((int)poly_id) != (int)poly_id) {
+					continue;
+				}
+				for (int vertex : polygon_loops[poly_id]) {
+					vertex_users[vertex].push_back((int)poly_id);
+				}
+			}
+			for (const auto &[vertex, users] : vertex_users) {
+				bool removable = true;
+				for (int poly_id : users) {
+					const std::vector<int> &loop = polygon_loops[poly_id];
+					if (loop.size() <= 3) {
+						removable = false;
+						break;
+					}
+					const int position = (int)(std::find(loop.begin(), loop.end(), vertex) - loop.begin());
+					const int previous = loop[(position - 1 + (int)loop.size()) % loop.size()];
+					const int next = loop[(position + 1) % loop.size()];
+					const PointD &a = local_points[previous];
+					const PointD &b = local_points[vertex];
+					const PointD &c = local_points[next];
+					if (Math::abs((b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x)) > 1e-9) {
+						removable = false;
+						break;
+					}
+				}
+				if (!removable) {
+					continue;
+				}
+				for (int poly_id : users) {
+					std::vector<int> &loop = polygon_loops[poly_id];
+					loop.erase(std::find(loop.begin(), loop.end(), vertex));
+				}
+			}
+		}
+
+		for (size_t poly_id = 0; poly_id < polygon_loops.size(); poly_id++) {
+			if (root_of((int)poly_id) != (int)poly_id) {
+				continue;
+			}
+			const std::vector<int> &loop = polygon_loops[poly_id];
+			const int point_count = (int)loop.size();
+			Vector<int> nav_polygon;
+			nav_polygon.resize(point_count);
+			for (int i = 0; i < point_count; i++) {
+				const PointD &pt = local_points[loop[i]];
+				const Vector3 world_vertex = p_plane_origin + p_basis_u * (real_t)pt.x + p_basis_v * (real_t)pt.y;
+				HashMap<Vector3, int>::Iterator E = r_point_to_index.find(world_vertex);
+				if (!E) {
+					E = r_point_to_index.insert(world_vertex, r_nav_vertices.size());
+					r_nav_vertices.push_back(world_vertex);
+				}
+				// Reverse the winding: poly2tri emits CCW-in-(u,v) polygons, but Godot's navigation
+				// mesh expects the opposite winding so the polygons face along the plane normal
+				// (correct surface normal for the navigation map and backface-culled debug render).
+				nav_polygon.write[point_count - 1 - i] = E->value;
+			}
+			r_nav_polygons.push_back(nav_polygon);
+		}
+
+		for (p2t::Point *p : owned_points) {
+			delete p;
 		}
 	}
 
@@ -885,12 +991,15 @@ static void generator_bake_flat_from_source_geometry_data(Ref<NavigationMesh> p_
 	PathsD path_solution = Difference(traversable_polygon_paths, obstruction_polygon_paths, FillRule::NonZero);
 
 	if (agent_radius > 0.0) {
-		// Round joins make the erosion an exact disc Minkowski operation (up to arc tessellation):
-		// a disc-shaped agent sliding along a convex obstacle corner traces an arc, so the eroded
-		// hole must be the footprint dilated by a disc — miter corners would overclaim blocked
-		// area at every corner by up to r * (sqrt(2) - 1).
+		// Erode with round joins so the boundary follows the disc Minkowski arcs a circular agent
+		// traces around convex obstacle corners (miter corners would overclaim blocked area at
+		// every corner by up to r * (sqrt(2) - 1)). Chord tessellation of an arc always cuts
+		// toward the obstacle, which would let agents stand inside the true clearance band by up
+		// to the chord error — so erode by that error on top of the agent radius. The polygonal
+		// boundary then lies strictly between the exact clearance at agent_radius and at
+		// agent_radius + arc_tolerance: never permissive, at most 1 cm conservative.
 		constexpr double arc_tolerance = 0.01;
-		path_solution = InflatePaths(path_solution, -agent_radius, JoinType::Round, EndType::Polygon, 2.0, 2, arc_tolerance);
+		path_solution = InflatePaths(path_solution, -(agent_radius + arc_tolerance), JoinType::Round, EndType::Polygon, 2.0, 2, arc_tolerance);
 	}
 
 	// Carve obstructions that are not affected by agent radius, applied after erosion.

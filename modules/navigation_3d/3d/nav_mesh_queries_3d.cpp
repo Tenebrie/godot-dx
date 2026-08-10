@@ -556,9 +556,13 @@ void NavMeshQueries3D::query_task_map_iteration_get_path(NavMeshPathQueryTask3D 
 
 	p_query_task.path_reverse();
 
-	if (p_query_task.simplify_path) {
-		_query_task_simplified_path_points(p_query_task);
-	}
+	// Post-processing emits a path point at polygon transitions even when the path runs dead
+	// straight through them. A point deviating less than a millimeter from the segment between
+	// its neighbors is portal noise, not path information — always prune at that floor, on top
+	// of any caller-requested simplification.
+	p_query_task.simplify_path = true;
+	p_query_task.simplify_epsilon = MAX(p_query_task.simplify_epsilon, 0.001f);
+	_query_task_simplified_path_points(p_query_task);
 
 	_query_task_process_path_result_limits(p_query_task);
 

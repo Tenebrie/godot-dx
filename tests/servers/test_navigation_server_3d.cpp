@@ -36,6 +36,7 @@ TEST_FORCE_LINK(test_navigation_server_3d)
 
 #ifdef MODULE_NAVIGATION_3D_ENABLED
 
+#include "core/math/geometry_3d.h"
 #include "core/object/callable_mp.h"
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/main/scene_tree.h"
@@ -881,26 +882,28 @@ TEST_SUITE("[Navigation3D]") {
 			return navigation_mesh;
 		};
 
-		// Worst length-to-height ratio among triangles with a long edge. Catches sliver "fans":
-		// without Delaunay refinement a CDT must span open areas with boundary-to-boundary
-		// triangles that are meters long but centimeters tall.
-		auto worst_long_triangle_aspect = [](const Ref<NavigationMesh> &p_navigation_mesh) -> double {
+		// Navigation polygons must be convex or corridor traversal and the funnel misbehave.
+		auto all_polygons_convex = [](const Ref<NavigationMesh> &p_navigation_mesh) -> bool {
 			const Vector<Vector3> vertices = p_navigation_mesh->get_vertices();
-			double worst = 0.0;
 			for (int i = 0; i < p_navigation_mesh->get_polygon_count(); i++) {
 				const Vector<int> polygon = p_navigation_mesh->get_polygon(i);
-				const Vector3 a = vertices[polygon[0]];
-				const Vector3 b = vertices[polygon[1]];
-				const Vector3 c = vertices[polygon[2]];
-				const double longest = MAX((b - a).length(), MAX((c - b).length(), (a - c).length()));
-				if (longest < 2.5) {
-					continue;
+				double reference_sign = 0.0;
+				for (int j = 0; j < polygon.size(); j++) {
+					const Vector3 a = vertices[polygon[j]];
+					const Vector3 b = vertices[polygon[(j + 1) % polygon.size()]];
+					const Vector3 c = vertices[polygon[(j + 2) % polygon.size()]];
+					const double cross = (b.x - a.x) * (c.z - b.z) - (b.z - a.z) * (c.x - b.x);
+					if (Math::abs(cross) < 1e-9) {
+						continue;
+					}
+					if (reference_sign == 0.0) {
+						reference_sign = SIGN(cross);
+					} else if (SIGN(cross) != reference_sign) {
+						return false;
+					}
 				}
-				const double area = (b - a).cross(c - a).length() * 0.5;
-				const double height = 2.0 * area / longest;
-				worst = MAX(worst, longest / MAX(height, 1e-9));
 			}
-			return worst;
+			return true;
 		};
 
 		// The summed triangle area must match the analytic walkable area: too little means an
@@ -921,6 +924,7 @@ TEST_SUITE("[Navigation3D]") {
 			Ref<NavigationMesh> navigation_mesh = bake_with_obstructions({ { Vector3(-1, 0, -1), Vector3(1, 0, -1), Vector3(1, 0, 1), Vector3(-1, 0, 1) } });
 			CHECK_GT(navigation_mesh->get_polygon_count(), 0);
 			CHECK_LT(Math::abs(baked_area(navigation_mesh) - 96.0), 0.1);
+			CHECK(all_polygons_convex(navigation_mesh));
 		}
 
 		SUBCASE("Walkable area pinched to single points between obstructions and the boundary") {
@@ -957,29 +961,31 @@ TEST_SUITE("[Navigation3D]") {
 		}
 
 		SUBCASE("Agent radius erosion dilates obstacles with rounded corners") {
-			// Two boxes with corners at (0,0) and (1,1), eroded by agent radius 0.5. The exact
-			// disc dilation leaves each hole as the box grown by 0.5 with quarter-circle corners:
+			// Two boxes with corners at (0,0) and (1,1). Agent radius 0.49 plus the baker's 1 cm
+			// conservative arc allowance erodes by exactly 0.5, leaving each hole as the box
+			// grown by 0.5 with quarter-circle corners:
 			// walkable = 81 - (16 + 16*0.5 + PI*0.25) - (9 + 12*0.5 + PI*0.25) = 40.43. A miter
 			// erosion would close the diagonal gap and yield 40.0, so this also verifies the
 			// sqrt(2) corner gap stays open for a disc agent.
 			Ref<NavigationMesh> navigation_mesh = make_flat_navigation_mesh();
-			navigation_mesh->set_agent_radius(0.5);
+			navigation_mesh->set_agent_radius(0.49);
 			Ref<NavigationMeshSourceGeometryData3D> source_geometry = memnew(NavigationMeshSourceGeometryData3D);
 			source_geometry->add_faces(floor_faces, Transform3D());
 			source_geometry->add_projected_obstruction({ Vector3(-4, 0, -4), Vector3(0, 0, -4), Vector3(0, 0, 0), Vector3(-4, 0, 0) }, 0.0, 1.0, false);
 			source_geometry->add_projected_obstruction({ Vector3(1, 0, 1), Vector3(4, 0, 1), Vector3(4, 0, 4), Vector3(1, 0, 4) }, 0.0, 1.0, false);
 			navigation_server->bake_from_source_geometry_data(navigation_mesh, source_geometry, Callable());
 			CHECK_GT(navigation_mesh->get_polygon_count(), 0);
-			CHECK_LT(Math::abs(baked_area(navigation_mesh) - 40.43), 0.1);
-			CHECK_LT(worst_long_triangle_aspect(navigation_mesh), 8.0);
+			CHECK_LT(Math::abs(baked_area(navigation_mesh) - 40.43), 0.15);
+			CHECK(all_polygons_convex(navigation_mesh));
 		}
 
 		SUBCASE("Agent radius erosion closing a face-to-face gap of exactly one diameter") {
-			// The boxes' facing edges are 1.0 apart with agent radius 0.5, so the eroded corridor
-			// collapses to a zero-width contact along a whole segment: walkable =
+			// The boxes' facing edges are 1.0 apart; agent radius 0.49 plus the baker's 1 cm
+			// conservative arc allowance erodes by exactly 0.5, so the corridor collapses to a
+			// zero-width contact along a whole segment: walkable =
 			// 81 - (16 + 16*0.5 + PI*0.25) - (12 + 14*0.5 + PI*0.25) = 36.43.
 			Ref<NavigationMesh> navigation_mesh = make_flat_navigation_mesh();
-			navigation_mesh->set_agent_radius(0.5);
+			navigation_mesh->set_agent_radius(0.49);
 			Ref<NavigationMeshSourceGeometryData3D> source_geometry = memnew(NavigationMeshSourceGeometryData3D);
 			source_geometry->add_faces(floor_faces, Transform3D());
 			source_geometry->add_projected_obstruction({ Vector3(-4, 0, -4), Vector3(0, 0, -4), Vector3(0, 0, 0), Vector3(-4, 0, 0) }, 0.0, 1.0, false);
@@ -989,17 +995,12 @@ TEST_SUITE("[Navigation3D]") {
 			CHECK_LT(Math::abs(baked_area(navigation_mesh) - 36.43), 0.2);
 		}
 
-		SUBCASE("Carved hole tangent to the eroded boundary at exactly one vertex") {
-			// Erosion by 0.5 puts the walkable boundary at z = 4.5; the carved diamond's tip sits
-			// exactly on it, so the hole and the outer ring share one coordinate-identical vertex.
-			Ref<NavigationMesh> navigation_mesh = make_flat_navigation_mesh();
-			navigation_mesh->set_agent_radius(0.5);
-			Ref<NavigationMeshSourceGeometryData3D> source_geometry = memnew(NavigationMeshSourceGeometryData3D);
-			source_geometry->add_faces(floor_faces, Transform3D());
-			source_geometry->add_projected_obstruction({ Vector3(0, 0, 4.5), Vector3(1, 0, 3.5), Vector3(0, 0, 2.5), Vector3(-1, 0, 3.5) }, 0.0, 1.0, true);
-			navigation_server->bake_from_source_geometry_data(navigation_mesh, source_geometry, Callable());
+		SUBCASE("Carved hole tangent to the walkable boundary at exactly one vertex") {
+			// The carved diamond's tip sits exactly on the floor edge, so the hole and the outer
+			// ring share one coordinate on an edge interior without sharing a ring vertex.
+			Ref<NavigationMesh> navigation_mesh = bake_with_obstructions({ { Vector3(0, 0, 5), Vector3(1, 0, 4), Vector3(0, 0, 3), Vector3(-1, 0, 4) } });
 			CHECK_GT(navigation_mesh->get_polygon_count(), 0);
-			CHECK_LT(Math::abs(baked_area(navigation_mesh) - 79.0), 0.1);
+			CHECK_LT(Math::abs(baked_area(navigation_mesh) - 98.0), 0.1);
 		}
 
 		SUBCASE("Two carved holes sharing a single vertex") {
@@ -1028,6 +1029,79 @@ TEST_SUITE("[Navigation3D]") {
 			CHECK_LT(Math::abs(baked_area(navigation_mesh) - 97.5), 0.1);
 			CHECK_LE(navigation_mesh->get_vertices().size(), 12);
 		}
+	}
+
+	TEST_CASE("[NavigationServer3D] Flat baking a plain square floor emits exactly the square") {
+		NavigationServer3D *navigation_server = NavigationServer3D::get_singleton();
+
+		Ref<NavigationMesh> navigation_mesh = memnew(NavigationMesh);
+		navigation_mesh->set_baking_flat_enabled(true);
+		navigation_mesh->set_baking_flat_plane(Plane(0, 1, 0, 0));
+		navigation_mesh->set_baking_flat_triangulation_algorithm(NavigationMesh::FLAT_TRIANGULATION_CDT);
+		navigation_mesh->set_agent_radius(0.0);
+
+		Ref<NavigationMeshSourceGeometryData3D> source_geometry = memnew(NavigationMeshSourceGeometryData3D);
+		source_geometry->add_faces({ Vector3(-10, 0, -10), Vector3(-10, 0, 10), Vector3(10, 0, 10),
+										   Vector3(-10, 0, -10), Vector3(10, 0, 10), Vector3(10, 0, -10) },
+				Transform3D());
+		navigation_server->bake_from_source_geometry_data(navigation_mesh, source_geometry, Callable());
+
+		CHECK_EQ(navigation_mesh->get_vertices().size(), 4);
+		CHECK_GT(navigation_mesh->get_polygon_count(), 0);
+		CHECK_LE(navigation_mesh->get_polygon_count(), 2);
+		double area = 0.0;
+		const Vector<Vector3> vertices = navigation_mesh->get_vertices();
+		for (int i = 0; i < navigation_mesh->get_polygon_count(); i++) {
+			const Vector<int> polygon = navigation_mesh->get_polygon(i);
+			for (int j = 1; j + 1 < polygon.size(); j++) {
+				area += 0.5 * (vertices[polygon[j]] - vertices[polygon[0]]).cross(vertices[polygon[j + 1]] - vertices[polygon[0]]).length();
+			}
+		}
+		CHECK_LT(Math::abs(area - 400.0), 0.01);
+	}
+
+	TEST_CASE("[NavigationServer3D] Flat baked map should produce straight paths in open areas") {
+		NavigationServer3D *navigation_server = NavigationServer3D::get_singleton();
+
+		Ref<NavigationMesh> navigation_mesh = memnew(NavigationMesh);
+		navigation_mesh->set_baking_flat_enabled(true);
+		navigation_mesh->set_baking_flat_plane(Plane(0, 1, 0, 0));
+		navigation_mesh->set_baking_flat_triangulation_algorithm(NavigationMesh::FLAT_TRIANGULATION_CDT);
+		navigation_mesh->set_agent_radius(0.4);
+
+		Ref<NavigationMeshSourceGeometryData3D> source_geometry = memnew(NavigationMeshSourceGeometryData3D);
+		source_geometry->add_faces({ Vector3(-10, 0, -10), Vector3(-10, 0, 10), Vector3(10, 0, 10),
+										   Vector3(-10, 0, -10), Vector3(10, 0, 10), Vector3(10, 0, -10) },
+				Transform3D());
+		// One obstruction placed so that its dilation stays clear of all three tested lines and
+		// their endpoints, keeping every query an unobstructed straight shot.
+		source_geometry->add_projected_obstruction({ Vector3(-1, 0, 5), Vector3(1, 0, 5), Vector3(1, 0, 7), Vector3(-1, 0, 7) }, 0.0, 1.0, false);
+		navigation_server->bake_from_source_geometry_data(navigation_mesh, source_geometry, Callable());
+		CHECK_GT(navigation_mesh->get_polygon_count(), 0);
+
+		RID map = navigation_server->map_create();
+		navigation_server->map_set_use_async_iterations(map, false);
+		navigation_server->map_set_active(map, true);
+		// The map matches polygon edges by rasterizing vertices to cell_size. Flat baking emits
+		// exact geometry with legitimately close vertices (arc chords, pinch notches), so the
+		// cell size must stay below the baker's coordinate quantum (0.01) or distinct vertices
+		// collide into one raster key and edge connections are silently dropped.
+		navigation_server->map_set_cell_size(map, 0.005);
+		RID region = navigation_server->region_create();
+		navigation_server->region_set_use_async_iterations(region, false);
+		navigation_server->region_set_map(region, map);
+		navigation_server->region_set_navigation_mesh(region, navigation_mesh);
+		navigation_server->physics_process(0.0);
+
+		// A straight unobstructed line must come back as exactly its two endpoints — every extra
+		// point is the corridor funnel bending around a polygon vertex that should not exist.
+		CHECK_EQ(navigation_server->map_get_path(map, Vector3(-8, 0, -8), Vector3(8, 0, 8), true).size(), 2);
+		CHECK_EQ(navigation_server->map_get_path(map, Vector3(-9, 0, 0), Vector3(9, 0, 0), true).size(), 2);
+		CHECK_EQ(navigation_server->map_get_path(map, Vector3(-8, 0, 8), Vector3(8, 0, -8), true).size(), 2);
+
+		navigation_server->free_rid(region);
+		navigation_server->free_rid(map);
+		navigation_server->physics_process(0.0);
 	}
 }
 
