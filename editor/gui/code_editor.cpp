@@ -1617,7 +1617,8 @@ Point2i CodeTextEditor::get_pos_for_display(Point2i p_internal_position) const {
 	const int indent_size = text_editor->get_indent_size();
 
 	int corrected_column = 0;
-	for (int i = 0; i < p_internal_position.y; i++) {
+	const int walk_length = MIN(p_internal_position.y, line_text.length());
+	for (int i = 0; i < walk_length; i++) {
 		if (line_text[i] == '\t') {
 			corrected_column += indent_size - (corrected_column % indent_size);
 		} else {
