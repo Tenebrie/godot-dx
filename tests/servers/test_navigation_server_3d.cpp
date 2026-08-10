@@ -881,6 +881,28 @@ TEST_SUITE("[Navigation3D]") {
 			return navigation_mesh;
 		};
 
+		// Worst length-to-height ratio among triangles with a long edge. Catches sliver "fans":
+		// without Delaunay refinement a CDT must span open areas with boundary-to-boundary
+		// triangles that are meters long but centimeters tall.
+		auto worst_long_triangle_aspect = [](const Ref<NavigationMesh> &p_navigation_mesh) -> double {
+			const Vector<Vector3> vertices = p_navigation_mesh->get_vertices();
+			double worst = 0.0;
+			for (int i = 0; i < p_navigation_mesh->get_polygon_count(); i++) {
+				const Vector<int> polygon = p_navigation_mesh->get_polygon(i);
+				const Vector3 a = vertices[polygon[0]];
+				const Vector3 b = vertices[polygon[1]];
+				const Vector3 c = vertices[polygon[2]];
+				const double longest = MAX((b - a).length(), MAX((c - b).length(), (a - c).length()));
+				if (longest < 2.5) {
+					continue;
+				}
+				const double area = (b - a).cross(c - a).length() * 0.5;
+				const double height = 2.0 * area / longest;
+				worst = MAX(worst, longest / MAX(height, 1e-9));
+			}
+			return worst;
+		};
+
 		// The summed triangle area must match the analytic walkable area: too little means an
 		// island was dropped, too much means a hole interior was triangulated as walkable.
 		auto baked_area = [](const Ref<NavigationMesh> &p_navigation_mesh) -> double {
@@ -934,10 +956,12 @@ TEST_SUITE("[Navigation3D]") {
 			CHECK_GT(navigation_mesh->get_polygon_count(), 0);
 		}
 
-		SUBCASE("Agent radius erosion pinching a diagonal gap shut at exactly one point") {
-			// Two boxes leave a diagonal gap between their corners at (0,0) and (1,1). Eroding by
-			// agent radius 0.5 moves both miter corners exactly onto (0.5, 0.5), so InflatePaths
-			// emits the two remaining walkable regions as one self-touching ring.
+		SUBCASE("Agent radius erosion dilates obstacles with rounded corners") {
+			// Two boxes with corners at (0,0) and (1,1), eroded by agent radius 0.5. The exact
+			// disc dilation leaves each hole as the box grown by 0.5 with quarter-circle corners:
+			// walkable = 81 - (16 + 16*0.5 + PI*0.25) - (9 + 12*0.5 + PI*0.25) = 40.43. A miter
+			// erosion would close the diagonal gap and yield 40.0, so this also verifies the
+			// sqrt(2) corner gap stays open for a disc agent.
 			Ref<NavigationMesh> navigation_mesh = make_flat_navigation_mesh();
 			navigation_mesh->set_agent_radius(0.5);
 			Ref<NavigationMeshSourceGeometryData3D> source_geometry = memnew(NavigationMeshSourceGeometryData3D);
@@ -946,7 +970,23 @@ TEST_SUITE("[Navigation3D]") {
 			source_geometry->add_projected_obstruction({ Vector3(1, 0, 1), Vector3(4, 0, 1), Vector3(4, 0, 4), Vector3(1, 0, 4) }, 0.0, 1.0, false);
 			navigation_server->bake_from_source_geometry_data(navigation_mesh, source_geometry, Callable());
 			CHECK_GT(navigation_mesh->get_polygon_count(), 0);
-			CHECK_LT(Math::abs(baked_area(navigation_mesh) - 40.0), 0.1);
+			CHECK_LT(Math::abs(baked_area(navigation_mesh) - 40.43), 0.1);
+			CHECK_LT(worst_long_triangle_aspect(navigation_mesh), 8.0);
+		}
+
+		SUBCASE("Agent radius erosion closing a face-to-face gap of exactly one diameter") {
+			// The boxes' facing edges are 1.0 apart with agent radius 0.5, so the eroded corridor
+			// collapses to a zero-width contact along a whole segment: walkable =
+			// 81 - (16 + 16*0.5 + PI*0.25) - (12 + 14*0.5 + PI*0.25) = 36.43.
+			Ref<NavigationMesh> navigation_mesh = make_flat_navigation_mesh();
+			navigation_mesh->set_agent_radius(0.5);
+			Ref<NavigationMeshSourceGeometryData3D> source_geometry = memnew(NavigationMeshSourceGeometryData3D);
+			source_geometry->add_faces(floor_faces, Transform3D());
+			source_geometry->add_projected_obstruction({ Vector3(-4, 0, -4), Vector3(0, 0, -4), Vector3(0, 0, 0), Vector3(-4, 0, 0) }, 0.0, 1.0, false);
+			source_geometry->add_projected_obstruction({ Vector3(1, 0, -4), Vector3(4, 0, -4), Vector3(4, 0, 0), Vector3(1, 0, 0) }, 0.0, 1.0, false);
+			navigation_server->bake_from_source_geometry_data(navigation_mesh, source_geometry, Callable());
+			CHECK_GT(navigation_mesh->get_polygon_count(), 0);
+			CHECK_LT(Math::abs(baked_area(navigation_mesh) - 36.43), 0.2);
 		}
 
 		SUBCASE("Carved hole tangent to the eroded boundary at exactly one vertex") {
@@ -972,14 +1012,18 @@ TEST_SUITE("[Navigation3D]") {
 
 		SUBCASE("Wall tiled from collinear segments triangulates like a single box") {
 			// The union of the tiles keeps a boundary vertex at every seam; unless those collinear
-			// vertices are dropped before triangulation, the CDT fans a sliver triangle from every
-			// seam vertex across the open floor.
-			Vector<Vector<Vector3>> segments;
+			// vertices are dropped before triangulation, every seam vertex survives into the mesh.
+			// Bake with ear clipping, which adds no vertices of its own, so the vertex count
+			// directly measures the boundary simplification.
+			Ref<NavigationMesh> navigation_mesh = make_flat_navigation_mesh();
+			navigation_mesh->set_baking_flat_triangulation_algorithm(NavigationMesh::FLAT_TRIANGULATION_EAR_CLIPPING);
+			Ref<NavigationMeshSourceGeometryData3D> source_geometry = memnew(NavigationMeshSourceGeometryData3D);
+			source_geometry->add_faces(floor_faces, Transform3D());
 			for (int i = 0; i < 10; i++) {
 				const real_t x = -2.5f + i * 0.5f;
-				segments.push_back({ Vector3(x, 0, 0), Vector3(x + 0.5f, 0, 0), Vector3(x + 0.5f, 0, 0.5), Vector3(x, 0, 0.5) });
+				source_geometry->add_projected_obstruction({ Vector3(x, 0, 0), Vector3(x + 0.5f, 0, 0), Vector3(x + 0.5f, 0, 0.5), Vector3(x, 0, 0.5) }, 0.0, 1.0, true);
 			}
-			Ref<NavigationMesh> navigation_mesh = bake_with_obstructions(segments);
+			navigation_server->bake_from_source_geometry_data(navigation_mesh, source_geometry, Callable());
 			CHECK_GT(navigation_mesh->get_polygon_count(), 0);
 			CHECK_LT(Math::abs(baked_area(navigation_mesh) - 97.5), 0.1);
 			CHECK_LE(navigation_mesh->get_vertices().size(), 12);

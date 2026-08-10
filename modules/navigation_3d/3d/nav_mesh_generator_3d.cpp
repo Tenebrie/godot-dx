@@ -37,7 +37,9 @@
 #include "scene/resources/3d/navigation_mesh_source_geometry_data_3d.h"
 #include "scene/resources/navigation_mesh.h"
 
+#include <cmath>
 #include <map>
+#include <set>
 
 #include <Recast.h>
 
@@ -439,6 +441,28 @@ static void generator_flat_triangulate_outer(
 		return simple_rings;
 	};
 
+	// Slivers leaning on a long constrained edge cannot be repaired by interior points alone: any
+	// candidate next to the edge is rejected by the boundary clearance. Splitting long boundary
+	// edges beforehand bounds those slivers to roughly the subdivision length, which interior
+	// refinement can then work against.
+	auto subdivide_ring = [](const PathD &p_ring) -> PathD {
+		constexpr double max_boundary_edge_length = 1.0;
+		PathD result;
+		result.reserve(p_ring.size() * 2);
+		for (size_t i = 0; i < p_ring.size(); i++) {
+			const PointD &a = p_ring[i];
+			const PointD &b = p_ring[(i + 1) % p_ring.size()];
+			result.push_back(a);
+			const double length = std::hypot(b.x - a.x, b.y - a.y);
+			const int pieces = (int)std::ceil(length / max_boundary_edge_length);
+			for (int j = 1; j < pieces; j++) {
+				const double t = (double)j / pieces;
+				result.emplace_back(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
+			}
+		}
+		return result;
+	};
+
 	// Tangent holes can rest entirely on the sub-ring boundary, so scan for the first vertex with
 	// a decisive inside/outside answer and treat an all-boundary hole as belonging.
 	auto hole_belongs_to_ring = [](const PathD &p_hole_ring, const PathD &p_outer_ring) -> bool {
@@ -471,66 +495,170 @@ static void generator_flat_triangulate_outer(
 		route_simple_rings(split_ring_at_pinch_points(sanitize_ring(p_outer_node->Child(i)->Polygon())));
 	}
 
-	for (const PathD &outer_ring : outer_rings) {
-		std::vector<const PathD *> island_holes;
+	for (const PathD &original_outer_ring : outer_rings) {
+		const PathD outer_ring = subdivide_ring(original_outer_ring);
+		std::vector<PathD> island_hole_rings;
 		for (const PathD &hole_ring : hole_rings) {
-			if (outer_rings.size() == 1 || hole_belongs_to_ring(hole_ring, outer_ring)) {
-				island_holes.push_back(&hole_ring);
+			if (outer_rings.size() == 1 || hole_belongs_to_ring(hole_ring, original_outer_ring)) {
+				island_hole_rings.push_back(subdivide_ring(hole_ring));
 			}
 		}
+		std::vector<const PathD *> island_holes;
+		island_holes.reserve(island_hole_rings.size());
+		for (const PathD &hole_ring : island_hole_rings) {
+			island_holes.push_back(&hole_ring);
+		}
 
-		// Own all p2t::Point allocations so poly2tri can hold raw pointers into them.
-		std::vector<p2t::Point *> owned_points;
+		// A constrained Delaunay triangulation is optimal for the vertices it is given but cannot
+		// add any: over a large open interior ringed by densely subdivided boundary (the arc
+		// corners the disc erosion produces), even the optimal triangulation degenerates into
+		// fans of meters-long slivers. Repair quality with Delaunay refinement: insert the
+		// centroid of every sliver as an interior Steiner point and re-triangulate until quality
+		// converges. A centroid of a triangulation triangle lies inside the island by
+		// construction; only candidates hugging the constrained boundary are rejected, since a
+		// point next to a constrained edge just breeds new slivers.
+		constexpr double sliver_edge_over_height_ratio = 5.0;
+		constexpr double sliver_minimum_edge_length = 0.75;
+		constexpr double refinement_boundary_clearance = 0.2;
+		constexpr int max_refinement_passes = 8;
 
-		auto build_ring = [&owned_points](const PathD &p_ring, std::vector<p2t::Point *> &r_out) {
-			r_out.reserve(p_ring.size());
-			for (const PointD &point : p_ring) {
-				p2t::Point *p = new p2t::Point(point.x, point.y);
-				owned_points.push_back(p);
-				r_out.push_back(p);
+		auto boundary_distance_squared_of = [&outer_ring, &island_holes](const PointD &p_point) -> double {
+			double closest = 1e300;
+			auto scan_ring = [&closest, &p_point](const PathD &p_ring) {
+				for (size_t i = 0; i < p_ring.size(); i++) {
+					const PointD &a = p_ring[i];
+					const PointD &b = p_ring[(i + 1) % p_ring.size()];
+					const double abx = b.x - a.x;
+					const double aby = b.y - a.y;
+					const double length_squared = abx * abx + aby * aby;
+					const double t = length_squared > 0.0 ? CLAMP(((p_point.x - a.x) * abx + (p_point.y - a.y) * aby) / length_squared, 0.0, 1.0) : 0.0;
+					const double dx = p_point.x - (a.x + t * abx);
+					const double dy = p_point.y - (a.y + t * aby);
+					closest = MIN(closest, dx * dx + dy * dy);
+				}
+			};
+			scan_ring(outer_ring);
+			for (const PathD *hole_ring : island_holes) {
+				scan_ring(*hole_ring);
 			}
+			return closest;
 		};
 
-		std::vector<p2t::Point *> outer;
-		build_ring(outer_ring, outer);
-
-		p2t::CDT cdt(outer);
+		std::set<std::pair<double, double>> used_coordinates;
+		for (const PointD &point : outer_ring) {
+			used_coordinates.insert({ point.x, point.y });
+		}
 		for (const PathD *hole_ring : island_holes) {
-			std::vector<p2t::Point *> hole;
-			build_ring(*hole_ring, hole);
-			cdt.AddHole(hole);
+			for (const PointD &point : *hole_ring) {
+				used_coordinates.insert({ point.x, point.y });
+			}
 		}
 
-		cdt.Triangulate();
-		if (!cdt.HasFailed()) {
-			const std::vector<p2t::Triangle *> triangles = cdt.GetTriangles();
-			for (p2t::Triangle *tri : triangles) {
-				Vector<int> nav_polygon;
-				nav_polygon.resize(3);
-				for (int i = 0; i < 3; i++) {
-					const p2t::Point *pt = tri->GetPoint(i);
-					const Vector3 world_vertex = p_plane_origin + p_basis_u * (real_t)pt->x + p_basis_v * (real_t)pt->y;
-					HashMap<Vector3, int>::Iterator E = r_point_to_index.find(world_vertex);
-					if (!E) {
-						E = r_point_to_index.insert(world_vertex, r_nav_vertices.size());
-						r_nav_vertices.push_back(world_vertex);
-					}
-					// Reverse the winding: poly2tri emits CCW-in-(u,v) triangles, but Godot's navigation
-					// mesh expects the opposite winding so the polygons face along the plane normal
-					// (correct surface normal for the navigation map and backface-culled debug render).
-					nav_polygon.write[2 - i] = E->value;
+		std::vector<PointD> refinement_points;
+		for (int pass = 0; pass <= max_refinement_passes; pass++) {
+			// Own all p2t::Point allocations so poly2tri can hold raw pointers into them.
+			std::vector<p2t::Point *> owned_points;
+
+			auto build_ring = [&owned_points](const PathD &p_ring, std::vector<p2t::Point *> &r_out) {
+				r_out.reserve(p_ring.size());
+				for (const PointD &point : p_ring) {
+					p2t::Point *p = new p2t::Point(point.x, point.y);
+					owned_points.push_back(p);
+					r_out.push_back(p);
 				}
-				r_nav_polygons.push_back(nav_polygon);
-			}
-		} else {
-			WARN_PRINT(vformat("NavigationMesh flat baking: CDT rejected island (outer %d pts, %d holes), falling back to ear clipping.", (int)outer_ring.size(), (int)island_holes.size()));
-			if (!generator_flat_triangulate_island_earclip(outer_ring, island_holes, r_nav_vertices, r_nav_polygons, r_point_to_index, p_plane_origin, p_basis_u, p_basis_v)) {
-				WARN_PRINT_ONCE("NavigationMesh flat baking: ear-clipping fallback also failed, skipping an island of walkable area.");
-			}
-		}
+			};
 
-		for (p2t::Point *p : owned_points) {
-			delete p;
+			std::vector<p2t::Point *> outer;
+			build_ring(outer_ring, outer);
+
+			p2t::CDT cdt(outer);
+			for (const PathD *hole_ring : island_holes) {
+				std::vector<p2t::Point *> hole;
+				build_ring(*hole_ring, hole);
+				cdt.AddHole(hole);
+			}
+			for (const PointD &point : refinement_points) {
+				p2t::Point *p = new p2t::Point(point.x, point.y);
+				owned_points.push_back(p);
+				cdt.AddPoint(p);
+			}
+
+			cdt.Triangulate();
+			// An empty result for a >= 3 vertex ring means the sweep silently lost the interior
+			// on weakly-valid input, so treat it exactly like an explicit failure.
+			if (cdt.HasFailed() || cdt.GetTriangles().empty()) {
+				WARN_PRINT(vformat("NavigationMesh flat baking: CDT rejected island (outer %d pts, %d holes, %d refinement pts), falling back to ear clipping.", (int)outer_ring.size(), (int)island_holes.size(), (int)refinement_points.size()));
+				if (!generator_flat_triangulate_island_earclip(outer_ring, island_holes, r_nav_vertices, r_nav_polygons, r_point_to_index, p_plane_origin, p_basis_u, p_basis_v)) {
+					WARN_PRINT_ONCE("NavigationMesh flat baking: ear-clipping fallback also failed, skipping an island of walkable area.");
+				}
+				for (p2t::Point *p : owned_points) {
+					delete p;
+				}
+				break;
+			}
+
+			const std::vector<p2t::Triangle *> triangles = cdt.GetTriangles();
+
+			bool inserted_any = false;
+			if (pass < max_refinement_passes) {
+				for (p2t::Triangle *tri : triangles) {
+					const p2t::Point *t0 = tri->GetPoint(0);
+					const p2t::Point *t1 = tri->GetPoint(1);
+					const p2t::Point *t2 = tri->GetPoint(2);
+					const double edge01 = Math::sqrt((t1->x - t0->x) * (t1->x - t0->x) + (t1->y - t0->y) * (t1->y - t0->y));
+					const double edge12 = Math::sqrt((t2->x - t1->x) * (t2->x - t1->x) + (t2->y - t1->y) * (t2->y - t1->y));
+					const double edge20 = Math::sqrt((t0->x - t2->x) * (t0->x - t2->x) + (t0->y - t2->y) * (t0->y - t2->y));
+					const double longest_edge = MAX(edge01, MAX(edge12, edge20));
+					if (longest_edge < sliver_minimum_edge_length) {
+						continue;
+					}
+					const double area = Math::abs((t1->x - t0->x) * (t2->y - t0->y) - (t2->x - t0->x) * (t1->y - t0->y)) * 0.5;
+					const double height = 2.0 * area / longest_edge;
+					if (longest_edge <= height * sliver_edge_over_height_ratio) {
+						continue;
+					}
+					const PointD centroid((t0->x + t1->x + t2->x) / 3.0, (t0->y + t1->y + t2->y) / 3.0);
+					const std::pair<double, double> key(centroid.x, centroid.y);
+					if (used_coordinates.count(key)) {
+						continue;
+					}
+					if (boundary_distance_squared_of(centroid) < refinement_boundary_clearance * refinement_boundary_clearance) {
+						continue;
+					}
+					used_coordinates.insert(key);
+					refinement_points.push_back(centroid);
+					inserted_any = true;
+				}
+			}
+
+			if (!inserted_any) {
+				for (p2t::Triangle *tri : triangles) {
+					Vector<int> nav_polygon;
+					nav_polygon.resize(3);
+					for (int i = 0; i < 3; i++) {
+						const p2t::Point *pt = tri->GetPoint(i);
+						const Vector3 world_vertex = p_plane_origin + p_basis_u * (real_t)pt->x + p_basis_v * (real_t)pt->y;
+						HashMap<Vector3, int>::Iterator E = r_point_to_index.find(world_vertex);
+						if (!E) {
+							E = r_point_to_index.insert(world_vertex, r_nav_vertices.size());
+							r_nav_vertices.push_back(world_vertex);
+						}
+						// Reverse the winding: poly2tri emits CCW-in-(u,v) triangles, but Godot's navigation
+						// mesh expects the opposite winding so the polygons face along the plane normal
+						// (correct surface normal for the navigation map and backface-culled debug render).
+						nav_polygon.write[2 - i] = E->value;
+					}
+					r_nav_polygons.push_back(nav_polygon);
+				}
+				for (p2t::Point *p : owned_points) {
+					delete p;
+				}
+				break;
+			}
+
+			for (p2t::Point *p : owned_points) {
+				delete p;
+			}
 		}
 	}
 
@@ -757,7 +885,12 @@ static void generator_bake_flat_from_source_geometry_data(Ref<NavigationMesh> p_
 	PathsD path_solution = Difference(traversable_polygon_paths, obstruction_polygon_paths, FillRule::NonZero);
 
 	if (agent_radius > 0.0) {
-		path_solution = InflatePaths(path_solution, -agent_radius, JoinType::Miter, EndType::Polygon);
+		// Round joins make the erosion an exact disc Minkowski operation (up to arc tessellation):
+		// a disc-shaped agent sliding along a convex obstacle corner traces an arc, so the eroded
+		// hole must be the footprint dilated by a disc — miter corners would overclaim blocked
+		// area at every corner by up to r * (sqrt(2) - 1).
+		constexpr double arc_tolerance = 0.01;
+		path_solution = InflatePaths(path_solution, -agent_radius, JoinType::Round, EndType::Polygon, 2.0, 2, arc_tolerance);
 	}
 
 	// Carve obstructions that are not affected by agent radius, applied after erosion.
@@ -786,12 +919,53 @@ static void generator_bake_flat_from_source_geometry_data(Ref<NavigationMesh> p_
 				vertex_use_counts[{ point.x, point.y }]++;
 			}
 		}
+
+		std::set<std::pair<double, double>> pinch_vertices;
+		for (const auto &[vertex, use_count] : vertex_use_counts) {
+			if (use_count >= 2) {
+				pinch_vertices.insert(vertex);
+			}
+		}
+
+		// A tangency can also touch the interior of an edge without sharing a vertex with it
+		// (e.g. an obstruction tip resting on the eroded boundary), which the use count above
+		// cannot see. Treat any vertex lying on a segment it is not an endpoint of as a pinch.
+		constexpr double on_edge_epsilon_squared = 1e-14;
+		auto lies_on_foreign_edge = [&path_solution](const PointD &p_point) -> bool {
+			for (const PathD &path : path_solution) {
+				for (size_t i = 0; i < path.size(); i++) {
+					const PointD &a = path[i];
+					const PointD &b = path[(i + 1) % path.size()];
+					if (a == p_point || b == p_point) {
+						continue;
+					}
+					const double abx = b.x - a.x;
+					const double aby = b.y - a.y;
+					const double length_squared = abx * abx + aby * aby;
+					const double t = length_squared > 0.0 ? CLAMP(((p_point.x - a.x) * abx + (p_point.y - a.y) * aby) / length_squared, 0.0, 1.0) : 0.0;
+					const double dx = p_point.x - (a.x + t * abx);
+					const double dy = p_point.y - (a.y + t * aby);
+					if (dx * dx + dy * dy < on_edge_epsilon_squared) {
+						return true;
+					}
+				}
+			}
+			return false;
+		};
+		for (const PathD &path : path_solution) {
+			for (const PointD &point : path) {
+				if (pinch_vertices.count({ point.x, point.y })) {
+					continue;
+				}
+				if (lies_on_foreign_edge(point)) {
+					pinch_vertices.insert({ point.x, point.y });
+				}
+			}
+		}
+
 		constexpr double pinch_notch_radius = 0.02;
 		PathsD pinch_notches;
-		for (const auto &[vertex, use_count] : vertex_use_counts) {
-			if (use_count < 2) {
-				continue;
-			}
+		for (const auto &vertex : pinch_vertices) {
 			PathD notch;
 			notch.reserve(4);
 			notch.emplace_back(vertex.first + pinch_notch_radius, vertex.second);
